@@ -262,7 +262,7 @@ def test_parse_batch_results_with_errors(tmp_path):
 
 
 def test_parse_batch_results_validation_error(tmp_path):
-    """Test parsing with schema validation errors."""
+    """Test parsing with schema validation errors - now non-fatal, returns empty list."""
     results_file = tmp_path / "results.jsonl"
     results_data = [
         {
@@ -283,8 +283,9 @@ def test_parse_batch_results_validation_error(tmp_path):
         for line in results_data:
             f.write(json.dumps(line) + '\n')
 
-    with pytest.raises(ValueError, match="does not match schema"):
-        parse_batch_results(str(results_file), TestSchema, validate=True)
+    # Validation errors are now non-fatal - should return empty list instead of raising
+    parsed = parse_batch_results(str(results_file), TestSchema, validate=True)
+    assert len(parsed) == 0
 
 
 def test_parse_batch_results_raw_text(tmp_path):
@@ -501,3 +502,311 @@ def test_parse_batch_results_with_metadata_errors(tmp_path):
     # Only one metadata entry for the successful response
     assert len(metadata) == 1
     assert metadata[0]['usageMetadata']['totalTokenCount'] == 60
+
+
+def test_parse_batch_results_with_markdown_wrapped_json(tmp_path):
+    """Test parsing JSON wrapped in markdown code blocks."""
+    results_file = tmp_path / "results.jsonl"
+    results_data = [
+        {
+            "key": "req1",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '```json\n{"name": "Test1", "value": 10}\n```'
+                        }]
+                    }
+                }]
+            }
+        },
+        {
+            "key": "req2",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '```\n{"name": "Test2", "value": 20}\n```'
+                        }]
+                    }
+                }]
+            }
+        }
+    ]
+
+    with open(results_file, 'w') as f:
+        for line in results_data:
+            f.write(json.dumps(line) + '\n')
+
+    parsed = parse_batch_results(str(results_file), TestSchema)
+
+    assert len(parsed) == 2
+    assert parsed[0].name == "Test1"
+    assert parsed[0].value == 10
+    assert parsed[1].name == "Test2"
+    assert parsed[1].value == 20
+
+
+def test_parse_batch_results_with_explanatory_text(tmp_path):
+    """Test parsing JSON with explanatory prefix and suffix text."""
+    results_file = tmp_path / "results.jsonl"
+    results_data = [
+        {
+            "key": "req1",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": 'Here is the extracted data: {"name": "Test1", "value": 10}'
+                        }]
+                    }
+                }]
+            }
+        },
+        {
+            "key": "req2",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": 'The result is: {"name": "Test2", "value": 20} as requested.'
+                        }]
+                    }
+                }]
+            }
+        }
+    ]
+
+    with open(results_file, 'w') as f:
+        for line in results_data:
+            f.write(json.dumps(line) + '\n')
+
+    parsed = parse_batch_results(str(results_file), TestSchema)
+
+    assert len(parsed) == 2
+    assert parsed[0].name == "Test1"
+    assert parsed[0].value == 10
+    assert parsed[1].name == "Test2"
+    assert parsed[1].value == 20
+
+
+def test_parse_batch_results_with_malformed_jsonl_lines(tmp_path):
+    """Test that malformed JSONL lines are skipped without crashing."""
+    results_file = tmp_path / "results.jsonl"
+
+    # Write file with some malformed lines
+    with open(results_file, 'w') as f:
+        # Good line
+        f.write(json.dumps({
+            "key": "req1",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Good1", "value": 1}'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+        # Malformed line (invalid JSON)
+        f.write('{"key": "req2", INVALID JSON HERE}\n')
+
+        # Another good line
+        f.write(json.dumps({
+            "key": "req3",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Good2", "value": 2}'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+        # Empty line (should be skipped)
+        f.write('\n')
+
+        # Another malformed line
+        f.write('not json at all\n')
+
+        # Final good line
+        f.write(json.dumps({
+            "key": "req4",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Good3", "value": 3}'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+    # Should parse successfully, skipping malformed lines
+    parsed = parse_batch_results(str(results_file), TestSchema)
+
+    # Should only get the 3 good results
+    assert len(parsed) == 3
+    assert parsed[0].name == "Good1"
+    assert parsed[0].value == 1
+    assert parsed[1].name == "Good2"
+    assert parsed[1].value == 2
+    assert parsed[2].name == "Good3"
+    assert parsed[2].value == 3
+
+
+def test_parse_batch_results_validation_error_non_fatal(tmp_path):
+    """Test that schema validation errors don't stop entire batch processing."""
+    results_file = tmp_path / "results.jsonl"
+    results_data = [
+        {
+            "key": "req1",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Good1", "value": 1}'
+                        }]
+                    }
+                }]
+            }
+        },
+        {
+            "key": "req2",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Bad", "value": "not_an_int"}'  # Invalid type
+                        }]
+                    }
+                }]
+            }
+        },
+        {
+            "key": "req3",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Good2", "value": 2}'
+                        }]
+                    }
+                }]
+            }
+        }
+    ]
+
+    with open(results_file, 'w') as f:
+        for line in results_data:
+            f.write(json.dumps(line) + '\n')
+
+    # With validation errors now being non-fatal, this should not raise
+    parsed = parse_batch_results(str(results_file), TestSchema, validate=True)
+
+    # Should get the 2 good results, skip the bad one
+    assert len(parsed) == 2
+    assert parsed[0].name == "Good1"
+    assert parsed[0].value == 1
+    assert parsed[1].name == "Good2"
+    assert parsed[1].value == 2
+
+
+def test_parse_batch_results_complex_mixed_issues(tmp_path):
+    """Test parsing with multiple types of issues in one batch."""
+    results_file = tmp_path / "results.jsonl"
+
+    with open(results_file, 'w') as f:
+        # 1. Good result
+        f.write(json.dumps({
+            "key": "req1",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Good", "value": 1}'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+        # 2. Result with markdown wrapper
+        f.write(json.dumps({
+            "key": "req2",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '```json\n{"name": "Markdown", "value": 2}\n```'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+        # 3. Malformed JSONL line
+        f.write('CORRUPTED LINE\n')
+
+        # 4. Result with explanatory text
+        f.write(json.dumps({
+            "key": "req4",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": 'Result: {"name": "Prefixed", "value": 3} done!'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+        # 5. Result with validation error
+        f.write(json.dumps({
+            "key": "req5",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Invalid", "value": "bad_type"}'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+        # 6. Result with error field
+        f.write(json.dumps({
+            "key": "req6",
+            "error": "API error occurred"
+        }) + '\n')
+
+        # 7. Another good result
+        f.write(json.dumps({
+            "key": "req7",
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"name": "Final", "value": 7}'
+                        }]
+                    }
+                }]
+            }
+        }) + '\n')
+
+    # Should successfully parse despite multiple issues
+    parsed = parse_batch_results(str(results_file), TestSchema, validate=True)
+
+    # Should get 4 successful results (req1, req2, req4, req7)
+    assert len(parsed) == 4
+    assert parsed[0].name == "Good"
+    assert parsed[1].name == "Markdown"
+    assert parsed[2].name == "Prefixed"
+    assert parsed[3].name == "Final"

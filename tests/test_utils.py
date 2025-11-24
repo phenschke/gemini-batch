@@ -195,3 +195,96 @@ def test_pdf_pages_to_images_file_not_found():
     """Test error handling for missing PDF file."""
     with pytest.raises(FileNotFoundError):
         utils.pdf_pages_to_images("/nonexistent/file.pdf")
+
+
+def test_extract_json_from_text_plain_json():
+    """Test extracting plain JSON without any wrapper text."""
+    json_str = '{"name": "test", "value": 42}'
+    result = utils.extract_json_from_text(json_str)
+    assert result == json_str
+
+
+def test_extract_json_from_text_markdown_code_block():
+    """Test extracting JSON from markdown code block."""
+    text = '```json\n{"name": "test", "value": 42}\n```'
+    result = utils.extract_json_from_text(text)
+    assert result == '{"name": "test", "value": 42}'
+
+
+def test_extract_json_from_text_markdown_code_block_no_language():
+    """Test extracting JSON from markdown code block without language specifier."""
+    text = '```\n{"name": "test", "value": 42}\n```'
+    result = utils.extract_json_from_text(text)
+    assert result == '{"name": "test", "value": 42}'
+
+
+def test_extract_json_from_text_with_prefix():
+    """Test extracting JSON with explanatory prefix text."""
+    text = 'Here is the extracted data: {"name": "test", "value": 42}'
+    result = utils.extract_json_from_text(text)
+    assert result == '{"name": "test", "value": 42}'
+
+
+def test_extract_json_from_text_with_prefix_and_suffix():
+    """Test extracting JSON with both prefix and suffix text."""
+    text = 'Here is the data: {"name": "test", "value": 42} and that\'s all!'
+    result = utils.extract_json_from_text(text)
+    assert result == '{"name": "test", "value": 42}'
+
+
+def test_extract_json_from_text_array():
+    """Test extracting JSON array."""
+    text = 'Results: [{"id": 1}, {"id": 2}]'
+    result = utils.extract_json_from_text(text)
+    assert result == '[{"id": 1}, {"id": 2}]'
+
+
+def test_extract_json_from_text_nested_objects():
+    """Test extracting nested JSON objects."""
+    text = '{"outer": {"inner": {"deep": "value"}}, "count": 3}'
+    result = utils.extract_json_from_text(text)
+    assert result == text
+
+
+def test_extract_json_from_text_with_escaped_quotes():
+    """Test extracting JSON with escaped quotes in strings."""
+    json_str = '{"message": "He said \\"hello\\""}'
+    result = utils.extract_json_from_text(json_str)
+    assert result == json_str
+
+
+def test_extract_json_from_text_no_json():
+    """Test when text contains no JSON structure."""
+    text = "This is just plain text with no JSON"
+    result = utils.extract_json_from_text(text)
+    assert result is None
+
+
+def test_extract_json_from_text_empty_string():
+    """Test with empty string."""
+    result = utils.extract_json_from_text("")
+    assert result is None
+
+
+def test_extract_json_from_text_none():
+    """Test with None input."""
+    result = utils.extract_json_from_text(None)
+    assert result is None
+
+
+def test_extract_json_from_text_multiline_markdown():
+    """Test extracting JSON from multiline markdown with indentation."""
+    text = '''```json
+{
+  "name": "test",
+  "value": 42,
+  "nested": {
+    "key": "value"
+  }
+}
+```'''
+    result = utils.extract_json_from_text(text)
+    # Should extract the JSON content without the markdown wrapper
+    assert '{"name":"test"' in result.replace('\n', '').replace(' ', '')
+    assert result.strip().startswith('{')
+    assert result.strip().endswith('}')

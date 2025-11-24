@@ -10,7 +10,7 @@ from google.genai import types
 from pydantic import BaseModel, ValidationError
 
 from . import config as app_config
-from .utils import GeminiClient, pdf_pages_to_images, build_generation_config, logger
+from .utils import GeminiClient, pdf_pages_to_images, build_generation_config, logger, extract_json_from_text
 
 
 def create_batch_job(
@@ -240,8 +240,18 @@ def parse_batch_results(
     """
     # Load results if file path provided
     if isinstance(results, str):
+        json_lines = []
         with open(results, "r", encoding="utf-8") as f:
-            json_lines = [json.loads(line) for line in f.readlines()]
+            for line_num, line in enumerate(f.readlines(), start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    json_lines.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    logger.error(f"Malformed JSON on line {line_num} in {results}: {e}")
+                    logger.debug(f"Skipping malformed line: {line[:100]}...")
+                    continue
     else:
         json_lines = results
 
@@ -305,21 +315,25 @@ def parse_batch_results(
                 parsed_results.append(llm_output)
                 logger.info(f"Successfully extracted raw text for {identifier}")
             else:
+                # Extract JSON from text (handles markdown, explanatory text, etc.)
+                extracted_json = extract_json_from_text(llm_output)
+                if extracted_json is None:
+                    # Fall back to original output if extraction fails
+                    logger.debug(f"Could not extract JSON from text for {identifier}, using original output")
+                    extracted_json = llm_output
+
                 # Parse and validate with Pydantic
                 if validate:
-                    try:
-                        parsed = schema.model_validate_json(llm_output)
-                        parsed_results.append(parsed)
-                        logger.info(f"Successfully parsed and validated result for {identifier}")
-                    except ValidationError as exc:
-                        logger.error(f"Validation failed for {identifier}: {exc}")
-                        raise ValueError(f"Result for '{identifier}' does not match schema") from exc
+                    parsed = schema.model_validate_json(extracted_json)
+                    parsed_results.append(parsed)
+                    logger.info(f"Successfully parsed and validated result for {identifier}")
                 else:
-                    data = json.loads(llm_output)
+                    data = json.loads(extracted_json)
                     parsed = schema.model_validate(data)
                     parsed_results.append(parsed)
+                    logger.info(f"Successfully parsed result for {identifier}")
 
-        except (KeyError, IndexError, json.JSONDecodeError, AttributeError) as e:
+        except (KeyError, IndexError, json.JSONDecodeError, AttributeError, ValidationError) as e:
             logger.error(f"Failed to parse result for {identifier}: {e}")
             continue
 

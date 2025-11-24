@@ -103,24 +103,52 @@ All responses use Pydantic schemas for validation:
 - Schema passed via `response_schema` parameter to `build_generation_config()`
 - Gemini API returns JSON matching the schema
 - Results parsed and validated with `schema.model_validate_json()`
-- Validation errors raise `ValueError` with details
+- Robust JSON extraction handles LLM responses with explanatory text or markdown wrappers
+
+### Robust JSON Parsing
+
+The library includes robust JSON parsing to handle common LLM output variations:
+
+**Handled patterns:**
+- **Markdown code blocks**: ````json\n{...}\n```` → Automatically stripped
+- **Explanatory text**: `"Here is the data: {...}"` → JSON extracted
+- **Mixed content**: `"Result: {...} as requested"` → JSON extracted
+- **Malformed JSONL lines**: Individual corrupted lines skipped, batch continues
+- **Schema validation errors**: Individual invalid results skipped, batch continues
+
+**Implementation:**
+- `extract_json_from_text()` utility in `utils.py` handles extraction
+- Uses regex for markdown blocks and bracket matching for embedded JSON
+- Falls back to original text if extraction fails
+- All errors are logged but non-fatal - library returns partial successful results
 
 ### Error Handling
 
 - **Missing API key**: Raises `ValueError` with clear message
 - **Job failures**: Logged with error details from `batch_job.error`
 - **Per-request failures**: Logged but don't fail entire batch
-- **Validation errors**: Raise `ValueError` with schema mismatch details
+- **Malformed JSONL lines**: Skipped with error log, processing continues
+- **JSON extraction failures**: Attempts extraction, falls back to original text
+- **Validation errors**: Logged and skipped (non-fatal), batch continues
 - **Failed requests**: Counted in `batch_stats.failed_request_count`
+
+**Fail-gracefully pattern**: The library prioritizes returning partial successful results over failing entirely. All parsing errors are logged but don't stop batch processing.
 
 ## Testing Strategy
 
 ### Unit Tests (Fast, No API)
 
 All unit tests use mocked API responses and focus on individual components:
-- **`test_utils.py`**: File upload to Gemini File API, PDF conversion, config building, API client
-- **`test_batch.py`**: Batch job creation, monitoring, result parsing
+- **`test_utils.py`**: File upload to Gemini File API, PDF conversion, config building, API client, JSON extraction
+- **`test_batch.py`**: Batch job creation, monitoring, result parsing (including robust parsing scenarios)
 - **`test_aggregation.py`**: Majority voting logic
+
+**Robust parsing test coverage:**
+- JSON extraction from markdown code blocks (with/without language specifier)
+- JSON extraction from text with explanatory prefixes/suffixes
+- Malformed JSONL lines don't crash batch parsing
+- Schema validation errors are non-fatal
+- Complex mixed issues (markdown + malformed lines + validation errors)
 
 Run with: `pytest -m "not integration"`
 

@@ -4,6 +4,7 @@ Core utilities for gemini-batch: client management, image processing, and utilit
 
 import os
 import io
+import re
 import mimetypes
 from typing import Union, Optional, List, Type, Dict
 from pathlib import Path
@@ -41,6 +42,111 @@ def get_api_key() -> str:
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable is required")
     return api_key
+
+
+def extract_json_from_text(text: str) -> Optional[str]:
+    """
+    Extract JSON from text that may contain explanatory content or markdown formatting.
+
+    This function handles common patterns where LLMs wrap JSON in additional text:
+    - Markdown code blocks: ```json {...} ```
+    - Explanatory prefixes: "Here's the result: {...}"
+    - Trailing text after JSON
+
+    Args:
+        text: Raw text that may contain JSON
+
+    Returns:
+        Cleaned JSON string, or None if no valid JSON structure found
+
+    Examples:
+        >>> extract_json_from_text('```json\\n{"key": "value"}\\n```')
+        '{"key": "value"}'
+        >>> extract_json_from_text('Here is the data: {"key": "value"}')
+        '{"key": "value"}'
+        >>> extract_json_from_text('{"key": "value"}')
+        '{"key": "value"}'
+    """
+    if not text or not isinstance(text, str):
+        return None
+
+    # Strip whitespace
+    text = text.strip()
+
+    # Pattern 1: Extract from markdown code blocks (```json ... ``` or ``` ... ```)
+    markdown_pattern = r"```(?:json)?\s*\n?(.*?)\n?```"
+    markdown_match = re.search(markdown_pattern, text, re.DOTALL)
+    if markdown_match:
+        extracted = markdown_match.group(1).strip()
+        if extracted:
+            logger.debug("Extracted JSON from markdown code block")
+            return extracted
+
+    # Pattern 2: Find JSON object {...} or array [...]
+    # Look for the first { or [ and find its matching closing bracket
+    json_start_obj = text.find('{')
+    json_start_arr = text.find('[')
+
+    # Determine which comes first (if any)
+    json_start = -1
+    is_object = True
+
+    if json_start_obj != -1 and json_start_arr != -1:
+        json_start = min(json_start_obj, json_start_arr)
+        is_object = (json_start == json_start_obj)
+    elif json_start_obj != -1:
+        json_start = json_start_obj
+        is_object = True
+    elif json_start_arr != -1:
+        json_start = json_start_arr
+        is_object = False
+
+    if json_start == -1:
+        # No JSON structure found
+        return None
+
+    # Find matching closing bracket
+    open_bracket = '{' if is_object else '['
+    close_bracket = '}' if is_object else ']'
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    json_end = -1
+
+    for i in range(json_start, len(text)):
+        char = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == '\\':
+            escape_next = True
+            continue
+
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char == open_bracket:
+                depth += 1
+            elif char == close_bracket:
+                depth -= 1
+                if depth == 0:
+                    json_end = i + 1
+                    break
+
+    if json_end != -1:
+        extracted = text[json_start:json_end]
+        if json_start > 0:
+            logger.debug(f"Extracted JSON from text (prefix removed: '{text[:json_start][:50]}...')")
+        return extracted
+
+    # If we couldn't find a complete JSON structure, return None
+    return None
+
 
 class GeminiClient:
     """Wrapper for Gemini client with reusable connection."""
@@ -263,6 +369,7 @@ def _show_image_popup(img: Image.Image, page_number: int) -> None:
 def build_generation_config(
     response_schema: Optional[Union[types.Schema, Type[BaseModel]]] = None,
     thinking_budget: Optional[int] = None,
+    thinking_level: Optional[str] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
@@ -273,7 +380,8 @@ def build_generation_config(
 
     Args:
         response_schema: The schema for the response (either types.Schema or Pydantic BaseModel class).
-        thinking_budget: The thinking budget.
+        thinking_budget: The thinking budget (int, for Flash models). Cannot be used with thinking_level.
+        thinking_level: The thinking level (str: "low" or "high", for Gemini 3.0 Pro). Cannot be used with thinking_budget.
         temperature: The temperature.
         top_p: The top-p value.
         top_k: The top-k value.
@@ -281,6 +389,9 @@ def build_generation_config(
 
     Returns:
         A types.GenerateContentConfig object representing the generation configuration.
+
+    Raises:
+        ValueError: If both thinking_budget and thinking_level are provided.
     """
     gen_config_dict = {
         "temperature": temperature if temperature is not None else config.MODEL_CONFIG["generation_config"]["temperature"],
@@ -291,8 +402,14 @@ def build_generation_config(
         gen_config_dict["response_mime_type"] = "application/json"
         gen_config_dict["response_json_schema"] = _transformers.t_schema(client=None, origin=response_schema)
 
+    # Validate that only one thinking parameter is provided
+    if thinking_budget is not None and thinking_level is not None:
+        raise ValueError("Cannot specify both thinking_budget and thinking_level. Use thinking_budget for Flash models or thinking_level for Gemini 3.0 Pro.")
+
     if thinking_budget is not None:
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
+    elif thinking_level is not None:
+        gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
 
     if top_p is not None:
         gen_config_dict["top_p"] = top_p
