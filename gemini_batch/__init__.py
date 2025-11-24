@@ -23,7 +23,7 @@ from .batch import (
 )
 from .aggregation import aggregate_records, ListVoteConfig, MajorityVoteResult
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "batch_process",
     "create_batch_job",
@@ -48,6 +48,7 @@ def batch_process(
     output_dir: str = ".",
     jsonl_dir: Optional[str] = None,
     return_metadata: bool = False,
+    media_resolution: Optional[str] = None,
     **generation_kwargs
 ) -> Union[List[BaseModel], List[str], str, tuple]:
     """
@@ -73,6 +74,11 @@ def batch_process(
         output_dir: Directory to save results (defaults to current dir)
         jsonl_dir: Directory to save JSONL request files (defaults to .tmp/)
         return_metadata: If True, returns tuple of (results, metadata_list) with usage stats
+        media_resolution: Optional media resolution for image/video inputs. Valid values:
+            - "MEDIA_RESOLUTION_LOW": Lower token usage, faster/cheaper, less detail
+            - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed
+            - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost
+            Controls quality vs cost tradeoff for media processing.
         **generation_kwargs: Additional generation config (temperature, max_output_tokens, etc.)
 
     Returns:
@@ -121,6 +127,7 @@ def batch_process(
         ...     ["You are a recipe extraction expert. ", img, " Extract the recipe name and ingredients."]
         ... ]
         >>> results = batch_process(prompts, Recipe)
+        >>>
         >>>
         >>> # Async mode
         >>> job_name = batch_process(prompts, Recipe, wait=False)
@@ -172,6 +179,7 @@ def batch_process(
     # Build generation config
     gen_config = utils.build_generation_config(
         response_schema=schema,
+        media_resolution=media_resolution,
         **generation_kwargs
     )
 

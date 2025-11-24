@@ -78,6 +78,7 @@ results = batch_process(prompts=prompts, schema=MySchema, n_samples=3)
 - `model`: Model name (default: "gemini-2.5-flash")
 - `wait`: Wait for completion (default: True)
 - `n_samples`: Process each prompt N times
+- `media_resolution`: Media quality control ("MEDIA_RESOLUTION_LOW"/"MEDIUM"/"HIGH")
 - `temperature`, `max_output_tokens`: Generation config
 
 **Returns:** List of Pydantic models (or job name if `wait=False`)

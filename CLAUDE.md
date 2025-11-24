@@ -64,6 +64,7 @@ parsed = parse_batch_results(results_file, schema)
   - `MODEL_CONFIG`: Default model and generation settings
   - `BATCH_CONFIG`: Polling interval, completed states, inline threshold
   - `IMAGE_PROCESSING_CONFIG`: DPI, grayscale, cropping defaults
+  - `MEDIA_RESOLUTION_OPTIONS`: Valid media resolution values for quality control
 
 ## Key Implementation Details
 
@@ -104,6 +105,13 @@ All responses use Pydantic schemas for validation:
 - Gemini API returns JSON matching the schema
 - Results parsed and validated with `schema.model_validate_json()`
 - Robust JSON extraction handles LLM responses with explanatory text or markdown wrappers
+
+### Media Resolution Control (v0.3.0+)
+
+The `media_resolution` parameter controls media quality vs cost tradeoff:
+- Valid values: `"MEDIA_RESOLUTION_LOW"`, `"MEDIA_RESOLUTION_MEDIUM"`, `"MEDIA_RESOLUTION_HIGH"`
+- Controls token allocation for images/videos (70-1120 tokens depending on setting)
+- Passed to `batch_process()` and `build_generation_config()`
 
 ### Robust JSON Parsing
 
@@ -296,8 +304,13 @@ disagreements = result.disagreements()
 ## Versioning and Releases
 
 - **Version**: Defined in `pyproject.toml` and `__init__.py`
-- **Current**: 0.1.0 (alpha)
+- **Current**: 0.3.0
 - Update both locations when bumping version
+
+**Version History:**
+- **0.3.0**: Added media_resolution parameter for quality vs cost control
+- **0.2.0**: Improved prompt structure with multi-part support
+- **0.1.0**: Initial release (alpha)
 
 ## Dependencies
 

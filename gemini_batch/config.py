@@ -29,3 +29,10 @@ IMAGE_PROCESSING_CONFIG = {
     "grayscale": False,
     "crop_sides": 0,
 }
+
+# --- Media Resolution Settings ---
+MEDIA_RESOLUTION_OPTIONS = {
+    "LOW": "MEDIA_RESOLUTION_LOW",       # Lower token usage, faster/cheaper, less detail
+    "MEDIUM": "MEDIA_RESOLUTION_MEDIUM", # Balanced detail, cost, and speed
+    "HIGH": "MEDIA_RESOLUTION_HIGH",     # Higher token usage, more detail, increased latency/cost
+}

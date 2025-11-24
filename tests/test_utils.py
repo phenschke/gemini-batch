@@ -161,6 +161,33 @@ def test_build_generation_config_custom_params():
     assert config.top_k == 40
 
 
+def test_build_generation_config_with_media_resolution():
+    """Test generation config with media_resolution parameter."""
+    config = build_generation_config(
+        media_resolution="MEDIA_RESOLUTION_HIGH"
+    )
+
+    assert config.media_resolution == "MEDIA_RESOLUTION_HIGH"
+
+
+def test_build_generation_config_with_media_resolution_and_schema():
+    """Test generation config with both media_resolution and response schema."""
+    from pydantic import BaseModel
+
+    class TestSchema(BaseModel):
+        name: str
+        value: int
+
+    config = build_generation_config(
+        response_schema=TestSchema,
+        media_resolution="MEDIA_RESOLUTION_MEDIUM"
+    )
+
+    assert config.media_resolution == "MEDIA_RESOLUTION_MEDIUM"
+    assert config.response_mime_type == "application/json"
+    assert config.response_json_schema is not None
+
+
 @patch('gemini_batch.utils.fitz')
 def test_pdf_pages_to_images(mock_fitz, tmp_path):
     """Test PDF to images conversion."""

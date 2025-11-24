@@ -374,6 +374,7 @@ def build_generation_config(
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     max_output_tokens: Optional[int] = None,
+    media_resolution: Optional[str] = None,
 ) -> types.GenerateContentConfig:
     """
     Builds a generation configuration for the Gemini API.
@@ -386,6 +387,11 @@ def build_generation_config(
         top_p: The top-p value.
         top_k: The top-k value.
         max_output_tokens: The maximum number of output tokens.
+        media_resolution: The media resolution for image/video inputs. Valid values:
+            - "MEDIA_RESOLUTION_LOW": Lower token usage, faster/cheaper, less detail (70-280 tokens/frame)
+            - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed (560 tokens for images)
+            - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost (1120 tokens for images)
+            Controls the maximum number of tokens allocated for media inputs.
 
     Returns:
         A types.GenerateContentConfig object representing the generation configuration.
@@ -415,5 +421,8 @@ def build_generation_config(
         gen_config_dict["top_p"] = top_p
     if top_k is not None:
         gen_config_dict["top_k"] = top_k
+
+    if media_resolution is not None:
+        gen_config_dict["media_resolution"] = media_resolution
 
     return types.GenerateContentConfig(**gen_config_dict)
