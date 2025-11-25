@@ -232,26 +232,34 @@ def parse_batch_results(
 
     Returns:
         If return_metadata=False:
-            - If schema provided: List of parsed Pydantic model instances
-            - If schema is None: List of raw text strings
+            - If schema provided: List of parsed Pydantic model instances (with None for failures)
+            - If schema is None: List of raw text strings (with None for failures)
         If return_metadata=True:
             - Tuple of (parsed_results, metadata_list) where metadata_list contains
               usage metadata dicts with token counts, model versions, etc.
+
+        Note: Output list length always matches input length. Failed/malformed results are
+        represented as None to preserve alignment with input requests.
     """
     # Load results if file path provided
     if isinstance(results, str):
         json_lines = []
+        total_lines = 0
         with open(results, "r", encoding="utf-8") as f:
             for line_num, line in enumerate(f.readlines(), start=1):
+                total_lines += 1
                 line = line.strip()
                 if not line:
+                    # Empty line - append None placeholder
+                    json_lines.append(None)
                     continue
                 try:
                     json_lines.append(json.loads(line))
                 except json.JSONDecodeError as e:
                     logger.error(f"Malformed JSON on line {line_num} in {results}: {e}")
                     logger.debug(f"Skipping malformed line: {line[:100]}...")
-                    continue
+                    # Append None to preserve alignment
+                    json_lines.append(None)
     else:
         json_lines = results
 
@@ -261,19 +269,37 @@ def parse_batch_results(
             return [], []
         return []
 
-    parsed_results: List[Union[BaseModel, str]] = []
-    metadata_list: List[Dict[str, Any]] = []
+    parsed_results: List[Union[BaseModel, str, None]] = []
+    metadata_list: List[Union[Dict[str, Any], None]] = []
+    success_count = 0
+    failure_count = 0
 
     for line in json_lines:
+        # Handle malformed JSONL lines (None placeholder)
+        if line is None:
+            parsed_results.append(None)
+            if return_metadata:
+                metadata_list.append(None)
+            failure_count += 1
+            continue
+
         # Handle both file-based (has 'key') and inline (has 'index') formats
         identifier = line.get('key', line.get('index', 'unknown'))
 
         if 'error' in line:
             logger.error(f"Request {identifier} failed with error: {line['error']}")
+            parsed_results.append(None)
+            if return_metadata:
+                metadata_list.append(None)
+            failure_count += 1
             continue
 
         if 'response' not in line:
             logger.warning(f"Skipping result {identifier} without 'response' field.")
+            parsed_results.append(None)
+            if return_metadata:
+                metadata_list.append(None)
+            failure_count += 1
             continue
 
         try:
@@ -308,11 +334,16 @@ def parse_batch_results(
                     metadata_list.append(metadata)
             else:
                 logger.error(f"Unknown response format for {identifier}")
+                parsed_results.append(None)
+                if return_metadata:
+                    metadata_list.append(None)
+                failure_count += 1
                 continue
 
             # If no schema, return raw text
             if schema is None:
                 parsed_results.append(llm_output)
+                success_count += 1
                 logger.info(f"Successfully extracted raw text for {identifier}")
             else:
                 # Extract JSON from text (handles markdown, explanatory text, etc.)
@@ -326,18 +357,23 @@ def parse_batch_results(
                 if validate:
                     parsed = schema.model_validate_json(extracted_json)
                     parsed_results.append(parsed)
+                    success_count += 1
                     logger.info(f"Successfully parsed and validated result for {identifier}")
                 else:
                     data = json.loads(extracted_json)
                     parsed = schema.model_validate(data)
                     parsed_results.append(parsed)
+                    success_count += 1
                     logger.info(f"Successfully parsed result for {identifier}")
 
         except (KeyError, IndexError, json.JSONDecodeError, AttributeError, ValidationError) as e:
             logger.error(f"Failed to parse result for {identifier}: {e}")
-            continue
+            parsed_results.append(None)
+            if return_metadata:
+                metadata_list.append(None)
+            failure_count += 1
 
-    logger.info(f"Successfully parsed {len(parsed_results)} results")
+    logger.info(f"Parsed {success_count} successful results, {failure_count} failures")
 
     if return_metadata:
         return parsed_results, metadata_list

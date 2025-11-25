@@ -229,7 +229,7 @@ def test_parse_batch_results_from_list():
 
 
 def test_parse_batch_results_with_errors(tmp_path):
-    """Test parsing results with errors."""
+    """Test parsing results with errors - preserves alignment with None."""
     results_file = tmp_path / "results.jsonl"
     results_data = [
         {
@@ -256,13 +256,15 @@ def test_parse_batch_results_with_errors(tmp_path):
 
     parsed = parse_batch_results(str(results_file), TestSchema)
 
-    # Only the good result should be parsed
-    assert len(parsed) == 1
-    assert parsed[0].name == "Good"
+    # Should preserve alignment - None for error, result for good
+    assert len(parsed) == 2
+    assert parsed[0] is None  # Failed request
+    assert parsed[1].name == "Good"
+    assert parsed[1].value == 1
 
 
 def test_parse_batch_results_validation_error(tmp_path):
-    """Test parsing with schema validation errors - now non-fatal, returns empty list."""
+    """Test parsing with schema validation errors - now non-fatal, returns None for invalid."""
     results_file = tmp_path / "results.jsonl"
     results_data = [
         {
@@ -283,9 +285,10 @@ def test_parse_batch_results_validation_error(tmp_path):
         for line in results_data:
             f.write(json.dumps(line) + '\n')
 
-    # Validation errors are now non-fatal - should return empty list instead of raising
+    # Validation errors are now non-fatal - should return list with None instead of raising
     parsed = parse_batch_results(str(results_file), TestSchema, validate=True)
-    assert len(parsed) == 0
+    assert len(parsed) == 1
+    assert parsed[0] is None  # Validation error results in None
 
 
 def test_parse_batch_results_raw_text(tmp_path):
@@ -465,7 +468,7 @@ def test_parse_batch_results_with_metadata_raw_text(tmp_path):
 
 
 def test_parse_batch_results_with_metadata_errors(tmp_path):
-    """Test that metadata is skipped for error responses."""
+    """Test that metadata preserves alignment with None for error responses."""
     results_file = tmp_path / "results.jsonl"
     results_data = [
         {
@@ -495,13 +498,15 @@ def test_parse_batch_results_with_metadata_errors(tmp_path):
 
     parsed, metadata = parse_batch_results(str(results_file), TestSchema, return_metadata=True)
 
-    # Only the good result should be parsed
-    assert len(parsed) == 1
-    assert parsed[0].name == "Good"
+    # Should preserve alignment with None for error
+    assert len(parsed) == 2
+    assert parsed[0] is None  # Error
+    assert parsed[1].name == "Good"
 
-    # Only one metadata entry for the successful response
-    assert len(metadata) == 1
-    assert metadata[0]['usageMetadata']['totalTokenCount'] == 60
+    # Metadata should also preserve alignment
+    assert len(metadata) == 2
+    assert metadata[0] is None  # No metadata for error
+    assert metadata[1]['usageMetadata']['totalTokenCount'] == 60
 
 
 def test_parse_batch_results_with_markdown_wrapped_json(tmp_path):
@@ -591,7 +596,7 @@ def test_parse_batch_results_with_explanatory_text(tmp_path):
 
 
 def test_parse_batch_results_with_malformed_jsonl_lines(tmp_path):
-    """Test that malformed JSONL lines are skipped without crashing."""
+    """Test that malformed JSONL lines preserve alignment with None."""
     results_file = tmp_path / "results.jsonl"
 
     # Write file with some malformed lines
@@ -627,7 +632,7 @@ def test_parse_batch_results_with_malformed_jsonl_lines(tmp_path):
             }
         }) + '\n')
 
-        # Empty line (should be skipped)
+        # Empty line (becomes None)
         f.write('\n')
 
         # Another malformed line
@@ -647,21 +652,24 @@ def test_parse_batch_results_with_malformed_jsonl_lines(tmp_path):
             }
         }) + '\n')
 
-    # Should parse successfully, skipping malformed lines
+    # Should parse successfully, preserving alignment with None for malformed lines
     parsed = parse_batch_results(str(results_file), TestSchema)
 
-    # Should only get the 3 good results
-    assert len(parsed) == 3
+    # Should get 6 results total (3 good, 3 None)
+    assert len(parsed) == 6
     assert parsed[0].name == "Good1"
     assert parsed[0].value == 1
-    assert parsed[1].name == "Good2"
-    assert parsed[1].value == 2
-    assert parsed[2].name == "Good3"
-    assert parsed[2].value == 3
+    assert parsed[1] is None  # Malformed JSON
+    assert parsed[2].name == "Good2"
+    assert parsed[2].value == 2
+    assert parsed[3] is None  # Empty line
+    assert parsed[4] is None  # Malformed JSON
+    assert parsed[5].name == "Good3"
+    assert parsed[5].value == 3
 
 
 def test_parse_batch_results_validation_error_non_fatal(tmp_path):
-    """Test that schema validation errors don't stop entire batch processing."""
+    """Test that schema validation errors don't stop entire batch processing - preserves alignment."""
     results_file = tmp_path / "results.jsonl"
     results_data = [
         {
@@ -709,12 +717,13 @@ def test_parse_batch_results_validation_error_non_fatal(tmp_path):
     # With validation errors now being non-fatal, this should not raise
     parsed = parse_batch_results(str(results_file), TestSchema, validate=True)
 
-    # Should get the 2 good results, skip the bad one
-    assert len(parsed) == 2
+    # Should preserve alignment with None for validation error
+    assert len(parsed) == 3
     assert parsed[0].name == "Good1"
     assert parsed[0].value == 1
-    assert parsed[1].name == "Good2"
-    assert parsed[1].value == 2
+    assert parsed[1] is None  # Validation error
+    assert parsed[2].name == "Good2"
+    assert parsed[2].value == 2
 
 
 def test_parse_batch_results_complex_mixed_issues(tmp_path):
@@ -801,12 +810,81 @@ def test_parse_batch_results_complex_mixed_issues(tmp_path):
             }
         }) + '\n')
 
-    # Should successfully parse despite multiple issues
+    # Should successfully parse despite multiple issues - preserves alignment
     parsed = parse_batch_results(str(results_file), TestSchema, validate=True)
 
-    # Should get 4 successful results (req1, req2, req4, req7)
-    assert len(parsed) == 4
+    # Should get 7 results total (3 successful, 3 None, 1 successful)
+    assert len(parsed) == 7
     assert parsed[0].name == "Good"
     assert parsed[1].name == "Markdown"
-    assert parsed[2].name == "Prefixed"
-    assert parsed[3].name == "Final"
+    assert parsed[2] is None  # Malformed JSONL line
+    assert parsed[3].name == "Prefixed"
+    assert parsed[4] is None  # Validation error
+    assert parsed[5] is None  # Error field
+    assert parsed[6].name == "Final"
+
+
+def test_parse_batch_results_preserves_alignment(tmp_path):
+    """Test that output length always matches input length."""
+    results_file = tmp_path / "results.jsonl"
+    results_data = [
+        {"key": "req1", "response": {"candidates": [{"content": {"parts": [{"text": '{"name": "R1", "value": 1}'}]}}]}},
+        {"key": "req2", "error": "Failed"},
+        {"key": "req3", "response": {"candidates": [{"content": {"parts": [{"text": '{"name": "R3", "value": 3}'}]}}]}},
+        {"key": "req4", "response": {"candidates": [{"content": {"parts": [{"text": '{"name": "R4", "value": "bad"}'}]}}]}},  # Validation error
+        {"key": "req5", "response": {"candidates": [{"content": {"parts": [{"text": '{"name": "R5", "value": 5}'}]}}]}},
+    ]
+
+    with open(results_file, 'w') as f:
+        for line in results_data:
+            f.write(json.dumps(line) + '\n')
+
+    parsed = parse_batch_results(str(results_file), TestSchema)
+
+    # Verify alignment is preserved
+    assert len(parsed) == 5
+    assert parsed[0].name == "R1"
+    assert parsed[1] is None  # Error
+    assert parsed[2].name == "R3"
+    assert parsed[3] is None  # Validation error
+    assert parsed[4].name == "R5"
+
+
+def test_parse_batch_results_alignment_with_metadata(tmp_path):
+    """Test that metadata list also preserves alignment."""
+    results_file = tmp_path / "results.jsonl"
+    results_data = [
+        {
+            "key": "req1",
+            "response": {
+                "candidates": [{"content": {"parts": [{"text": '{"name": "R1", "value": 1}'}]}}],
+                "usageMetadata": {"totalTokenCount": 100},
+                "modelVersion": "model-v1"
+            }
+        },
+        {"key": "req2", "error": "Failed"},
+        {
+            "key": "req3",
+            "response": {
+                "candidates": [{"content": {"parts": [{"text": '{"name": "R3", "value": 3}'}]}}],
+                "usageMetadata": {"totalTokenCount": 200},
+                "modelVersion": "model-v1"
+            }
+        },
+    ]
+
+    with open(results_file, 'w') as f:
+        for line in results_data:
+            f.write(json.dumps(line) + '\n')
+
+    parsed, metadata = parse_batch_results(str(results_file), TestSchema, return_metadata=True)
+
+    # Verify both lists have same length and alignment
+    assert len(parsed) == 3
+    assert len(metadata) == 3
+    assert parsed[0].name == "R1"
+    assert metadata[0]['usageMetadata']['totalTokenCount'] == 100
+    assert parsed[1] is None
+    assert metadata[1] is None  # None metadata for failed result
+    assert parsed[2].name == "R3"
+    assert metadata[2]['usageMetadata']['totalTokenCount'] == 200

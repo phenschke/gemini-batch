@@ -23,7 +23,7 @@ from .batch import (
 )
 from .aggregation import aggregate_records, ListVoteConfig, MajorityVoteResult
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "batch_process",
     "create_batch_job",
@@ -204,5 +204,52 @@ def batch_process(
     # Get results (always file-based)
     results_file = download_batch_results(job_name, output_dir)
     parsed = parse_batch_results(results_file, schema, return_metadata=return_metadata)
+
+    # Handle n_samples > 1: group results by prompt and aggregate
+    if n_samples > 1:
+        # If return_metadata=True, parsed is a tuple (results, metadata)
+        if return_metadata:
+            results, metadata = parsed
+        else:
+            results = parsed
+            metadata = None
+
+        # Group results by prompt index
+        grouped_results = []
+        grouped_metadata = [] if return_metadata else None
+
+        for i in range(len(prompts)):
+            # Get samples for this prompt
+            start_idx = i * n_samples
+            end_idx = (i + 1) * n_samples
+            samples = results[start_idx:end_idx]
+
+            # Filter out None values before aggregation
+            valid_samples = [s for s in samples if s is not None]
+
+            if not valid_samples:
+                # All samples failed - append None
+                grouped_results.append(None)
+                if return_metadata and metadata is not None:
+                    grouped_metadata.append(None)
+            elif len(valid_samples) == 1:
+                # Only one valid sample - use it directly (no aggregation needed)
+                grouped_results.append(valid_samples[0])
+                if return_metadata and metadata is not None:
+                    # Get metadata for the one valid sample
+                    sample_metadata = [metadata[start_idx + j] for j, s in enumerate(samples) if s is not None]
+                    grouped_metadata.append(sample_metadata[0])
+            else:
+                # Multiple valid samples - aggregate via majority voting
+                aggregated = aggregate_records(valid_samples, as_model=schema)
+                grouped_results.append(aggregated.aggregated)
+                if return_metadata and metadata is not None:
+                    # Aggregate metadata (take first valid metadata)
+                    sample_metadata = [metadata[start_idx + j] for j, s in enumerate(samples) if s is not None]
+                    grouped_metadata.append(sample_metadata[0] if sample_metadata else None)
+
+        if return_metadata:
+            return grouped_results, grouped_metadata
+        return grouped_results
 
     return parsed

@@ -88,6 +88,58 @@ results = batch_process(prompts=prompts, schema=MySchema, n_samples=3)
 - `create_batch_job()`, `monitor_batch_job()`, `download_batch_results()`
 - `parse_batch_results()`, `aggregate_records()`
 
+## Error Handling
+
+Starting with v0.4.0, `parse_batch_results()` preserves alignment between inputs and outputs:
+
+```python
+results = batch_process(prompts, schema)
+
+# Results list has same length as prompts
+assert len(results) == len(prompts)
+
+# Failed requests return None
+for i, result in enumerate(results):
+    if result is None:
+        print(f"Prompt {i} failed")
+    else:
+        print(f"Prompt {i} succeeded: {result}")
+
+# Filter out failures if needed
+successful_results = [r for r in results if r is not None]
+```
+
+### Breaking Changes in v0.4.0
+
+**Previous behavior (v0.3.0):**
+- Failed/invalid results were skipped
+- Output list could be shorter than input list
+- No way to determine which prompts failed
+
+**New behavior (v0.4.0):**
+- Failed/invalid results return `None`
+- Output list always matches input length
+- Clear indication of which prompts failed
+
+**Migration:**
+```python
+# Old code (v0.3.0) - assumes all results succeeded
+results = parse_batch_results("results.jsonl", MySchema)
+for result in results:
+    process(result)  # Works but can't tell which prompts failed
+
+# New code (v0.4.0) - handle failures explicitly
+results = parse_batch_results("results.jsonl", MySchema)
+for i, result in enumerate(results):
+    if result is None:
+        print(f"Prompt {i} failed")
+    else:
+        process(result)
+
+# Or filter out None values for old behavior
+successful_results = [r for r in results if r is not None]
+```
+
 ## Testing
 
 ```bash
