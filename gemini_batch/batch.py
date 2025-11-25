@@ -269,6 +269,32 @@ def parse_batch_results(
             return [], []
         return []
 
+    # Sort results by key to ensure correct order (batch API doesn't guarantee order)
+    def extract_sort_key(line):
+        """Extract sort key from result line. Returns (prompt_idx, sample_idx)."""
+        if line is None:
+            return (float('inf'), float('inf'))  # Put None entries at the end
+
+        # Get key or index
+        key = line.get('key', line.get('index', ''))
+
+        # Extract prompt and sample indices from key like "prompt_123_sample_0"
+        if isinstance(key, str) and 'prompt_' in key:
+            try:
+                parts = key.split('_')
+                prompt_idx = int(parts[1]) if len(parts) > 1 else float('inf')
+                sample_idx = int(parts[3]) if len(parts) > 3 else 0
+                return (prompt_idx, sample_idx)
+            except (ValueError, IndexError):
+                return (float('inf'), float('inf'))
+        elif isinstance(key, int):
+            # Inline mode uses integer index
+            return (key, 0)
+        else:
+            return (float('inf'), float('inf'))
+
+    json_lines = sorted(json_lines, key=extract_sort_key)
+
     parsed_results: List[Union[BaseModel, str, None]] = []
     metadata_list: List[Union[Dict[str, Any], None]] = []
     success_count = 0
