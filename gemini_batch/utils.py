@@ -413,7 +413,8 @@ def build_generation_config(
         raise ValueError("Cannot specify both thinking_budget and thinking_level. Use thinking_budget for Flash models or thinking_level for Gemini 3.0 Pro.")
 
     if thinking_budget is not None:
-        gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
+        include_thoughts = False if thinking_budget == 0 else None
+        gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget, include_thoughts=include_thoughts)
     elif thinking_level is not None:
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
 
