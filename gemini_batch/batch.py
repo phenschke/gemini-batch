@@ -3,6 +3,7 @@ Batch processing functionality for gemini-batch library.
 """
 
 import json
+import re
 import time
 from typing import Union, Optional, List, Type, Any, Dict
 from pathlib import Path
@@ -11,6 +12,22 @@ from pydantic import BaseModel, ValidationError
 
 from . import config as app_config
 from .utils import GeminiClient, pdf_pages_to_images, build_generation_config, logger, extract_json_from_text
+
+
+def extract_timestamp_from_display_name(display_name: str) -> Optional[int]:
+    """
+    Extract timestamp from display_name like 'batch-1700000000'.
+
+    Args:
+        display_name: Job display name to extract timestamp from
+
+    Returns:
+        Extracted timestamp as integer, or None if pattern doesn't match
+    """
+    if not display_name:
+        return None
+    match = re.match(r'batch-(\d+)', display_name)
+    return int(match.group(1)) if match else None
 
 
 def create_batch_job(
@@ -45,8 +62,11 @@ def create_batch_job(
             if 'request' in req:
                 req['request']['generation_config'] = gen_config_dict
 
+    # Generate timestamp for consistent naming
+    timestamp = int(time.time())
+
     if job_display_name is None:
-        job_display_name = f"batch-{len(requests)}-requests"
+        job_display_name = f"batch-{timestamp}"
 
     logger.info(f"Creating batch job '{job_display_name}' with {len(requests)} requests...")
 
@@ -55,7 +75,7 @@ def create_batch_job(
         jsonl_dir = app_config.BATCH_CONFIG["default_jsonl_dir"]
 
     Path(jsonl_dir).mkdir(parents=True, exist_ok=True)
-    jsonl_filename = str(Path(jsonl_dir) / f"batch_requests_{int(time.time())}.jsonl")
+    jsonl_filename = str(Path(jsonl_dir) / f"batch_{timestamp}_requests.jsonl")
 
     with open(jsonl_filename, "w", encoding="utf-8") as f:
         for req in requests:
@@ -125,13 +145,13 @@ def monitor_batch_job(job_name: str, poll_interval: int = app_config.BATCH_CONFI
         time.sleep(poll_interval)
 
 
-def download_batch_results(batch_job_name: str, output_dir: str = ".", overwrite: bool = True) -> str:
+def download_batch_results(batch_job_name: str, output_dir: Optional[str] = None, overwrite: bool = True) -> str:
     """
     Download batch results file from completed job.
 
     Args:
         batch_job_name: Name of the completed batch job
-        output_dir: Directory to save the downloaded file
+        output_dir: Directory to save the downloaded file (defaults to .gemini_batch/)
         overwrite: If True, overwrites existing file. If False, auto-increments filename.
 
     Returns:
@@ -147,8 +167,21 @@ def download_batch_results(batch_job_name: str, output_dir: str = ".", overwrite
     if not batch_job.dest or not batch_job.dest.file_name:
         raise ValueError("Batch job does not have an associated results file.")
 
+    # Use default output directory if not specified
+    if output_dir is None:
+        output_dir = app_config.BATCH_CONFIG["default_results_dir"]
+
+    # Ensure output directory exists
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Extract timestamp from display_name and create result filename
     if batch_job.display_name:
-        new_file_name = batch_job.display_name + ".jsonl"
+        timestamp = extract_timestamp_from_display_name(batch_job.display_name)
+        if timestamp:
+            new_file_name = f"batch_{timestamp}_results.jsonl"
+        else:
+            # Fallback if display_name doesn't match expected pattern
+            new_file_name = batch_job.display_name + ".jsonl"
     else:
         new_file_name = batch_job.dest.file_name
 

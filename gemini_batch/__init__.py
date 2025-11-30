@@ -45,7 +45,7 @@ def batch_process(
     n_samples: int = 1,
     job_display_name: Optional[str] = None,
     poll_interval: int = config.BATCH_CONFIG["poll_interval"],
-    output_dir: str = ".",
+    output_dir: Optional[str] = None,
     jsonl_dir: Optional[str] = None,
     return_metadata: bool = False,
     media_resolution: Optional[str] = None,
@@ -71,8 +71,8 @@ def batch_process(
         n_samples: Number of times to process each prompt (for majority voting)
         job_display_name: Optional display name for the batch job
         poll_interval: Seconds between job status checks (if wait=True)
-        output_dir: Directory to save results (defaults to current dir)
-        jsonl_dir: Directory to save JSONL request files (defaults to .tmp/)
+        output_dir: Directory to save results (defaults to .gemini_batch/)
+        jsonl_dir: Directory to save JSONL request files (defaults to .gemini_batch/)
         return_metadata: If True, returns tuple of (results, metadata_list) with usage stats
         media_resolution: Optional media resolution for image/video inputs. Valid values:
             - "MEDIA_RESOLUTION_LOW": Lower token usage, faster/cheaper, less detail

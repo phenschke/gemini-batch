@@ -888,3 +888,112 @@ def test_parse_batch_results_alignment_with_metadata(tmp_path):
     assert metadata[1] is None  # None metadata for failed result
     assert parsed[2].name == "R3"
     assert metadata[2]['usageMetadata']['totalTokenCount'] == 200
+
+
+def test_extract_timestamp_from_display_name():
+    """Test timestamp extraction from display_name."""
+    from gemini_batch.batch import extract_timestamp_from_display_name
+
+    # Valid patterns
+    assert extract_timestamp_from_display_name("batch-1700000000") == 1700000000
+    assert extract_timestamp_from_display_name("batch-1234567890") == 1234567890
+    assert extract_timestamp_from_display_name("batch-999") == 999
+
+    # Invalid patterns - should return None
+    assert extract_timestamp_from_display_name("my-custom-job") is None
+    assert extract_timestamp_from_display_name("batch-abc") is None
+    assert extract_timestamp_from_display_name("") is None
+    assert extract_timestamp_from_display_name(None) is None
+    assert extract_timestamp_from_display_name("no-timestamp-here") is None
+
+
+@patch('gemini_batch.batch.GeminiClient')
+@patch('builtins.open', create=True)
+@patch('time.time', return_value=1700000000)
+def test_timestamp_alignment_in_filenames(mock_time, mock_open, mock_client_class, tmp_path):
+    """Test that request and result files use the same timestamp."""
+    mock_client = MagicMock()
+    mock_batch_job = MagicMock()
+    mock_batch_job.name = "batches/test-job-456"
+    mock_batch_job.display_name = "batch-1700000000"  # Display name with timestamp
+    mock_uploaded_file = MagicMock()
+    mock_uploaded_file.name = "files/uploaded-123"
+    mock_client.client.files.upload.return_value = mock_uploaded_file
+    mock_client.client.batches.create.return_value = mock_batch_job
+    mock_client_class.return_value = mock_client
+
+    requests = [
+        {"key": "req1", "request": {"contents": [{"text": "test1"}]}},
+    ]
+
+    # Create batch job - should create batch_1700000000_requests.jsonl
+    job_name = create_batch_job(requests, jsonl_dir=str(tmp_path))
+
+    # Verify display_name was set with timestamp
+    create_call_args = mock_client.client.batches.create.call_args
+    assert "batch-1700000000" in str(create_call_args)
+
+    # Now test download_batch_results with the same job
+    mock_state = MagicMock()
+    mock_state.name = 'JOB_STATE_SUCCEEDED'
+    mock_batch_job.state = mock_state
+    mock_dest = MagicMock()
+    mock_dest.file_name = "files/results-123"
+    mock_batch_job.dest = mock_dest
+    file_content = b'{"key": "test", "response": {"text": "result"}}'
+    mock_client.client.files.download.return_value = file_content
+    mock_client.client.batches.get.return_value = mock_batch_job
+
+    # Download results - should create batch_1700000000_results.jsonl
+    result_path = download_batch_results(job_name, output_dir=str(tmp_path))
+
+    # Verify result filename uses the timestamp from display_name
+    assert "batch_1700000000_results.jsonl" in result_path
+
+
+@patch('gemini_batch.batch.GeminiClient')
+def test_download_batch_results_with_timestamp_extraction(mock_client_class, tmp_path):
+    """Test that download_batch_results extracts timestamp from display_name."""
+    mock_client = MagicMock()
+    mock_batch_job = MagicMock()
+    mock_state = MagicMock()
+    mock_state.name = 'JOB_STATE_SUCCEEDED'
+    mock_batch_job.state = mock_state
+    mock_batch_job.display_name = "batch-1234567890"  # Contains timestamp
+    mock_dest = MagicMock()
+    mock_dest.file_name = "files/results-123"
+    mock_batch_job.dest = mock_dest
+    file_content = b'{"key": "test", "response": {"text": "result"}}'
+    mock_client.client.files.download.return_value = file_content
+    mock_client.client.batches.get.return_value = mock_batch_job
+    mock_client_class.return_value = mock_client
+
+    result_path = download_batch_results("batches/test-job", output_dir=str(tmp_path))
+
+    # Should create batch_1234567890_results.jsonl
+    assert "batch_1234567890_results.jsonl" in result_path
+    assert Path(result_path).exists()
+
+
+@patch('gemini_batch.batch.GeminiClient')
+def test_download_batch_results_fallback_for_custom_display_name(mock_client_class, tmp_path):
+    """Test fallback behavior when display_name doesn't match pattern."""
+    mock_client = MagicMock()
+    mock_batch_job = MagicMock()
+    mock_state = MagicMock()
+    mock_state.name = 'JOB_STATE_SUCCEEDED'
+    mock_batch_job.state = mock_state
+    mock_batch_job.display_name = "my-custom-job"  # No timestamp pattern
+    mock_dest = MagicMock()
+    mock_dest.file_name = "files/results-123"
+    mock_batch_job.dest = mock_dest
+    file_content = b'{"key": "test", "response": {"text": "result"}}'
+    mock_client.client.files.download.return_value = file_content
+    mock_client.client.batches.get.return_value = mock_batch_job
+    mock_client_class.return_value = mock_client
+
+    result_path = download_batch_results("batches/test-job", output_dir=str(tmp_path))
+
+    # Should fall back to display_name + .jsonl
+    assert "my-custom-job.jsonl" in result_path
+    assert Path(result_path).exists()

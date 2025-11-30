@@ -62,7 +62,7 @@ parsed = parse_batch_results(results_file, schema)
 
 - **`config.py`**: Configuration constants
   - `MODEL_CONFIG`: Default model and generation settings
-  - `BATCH_CONFIG`: Polling interval, completed states, inline threshold
+  - `BATCH_CONFIG`: Polling interval, completed states, default directories (`.gemini_batch/`)
   - `IMAGE_PROCESSING_CONFIG`: DPI, grayscale, cropping defaults
   - `MEDIA_RESOLUTION_OPTIONS`: Valid media resolution values for quality control
 
@@ -258,11 +258,15 @@ The Gemini Batch API has some quirks that the library handles:
 
 ### File Cleanup
 
-The library creates temporary JSONL files for file-based mode:
-- Files are named `batch_requests_{timestamp}.jsonl`
-- Saved to `jsonl_dir` if specified, otherwise defaults to `.tmp/` directory
-- The `.tmp/` directory is gitignored to avoid cluttering repositories
+The library creates JSONL files for batch processing:
+- **Request files**: Named `batch_{timestamp}_requests.jsonl`
+- **Result files**: Named `batch_{timestamp}_results.jsonl`
+- **Default location**: `.gemini_batch/` directory for both requests and results
+- The `.gemini_batch/` directory is gitignored to avoid cluttering repositories
 - **Not automatically cleaned up** - files remain for debugging/auditing purposes
+- Both request and result files use the same timestamp for easy pairing
+
+**Timestamp coordination**: The timestamp is embedded in the job's `display_name` (default: `batch-{timestamp}`) during creation, then extracted during result download to ensure matching filenames.
 
 ### PDF Processing Utility
 

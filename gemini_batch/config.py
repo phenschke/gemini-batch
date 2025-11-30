@@ -20,7 +20,8 @@ BATCH_CONFIG = {
         'JOB_STATE_CANCELLED',
         'JOB_STATE_EXPIRED'
     },
-    "default_jsonl_dir": ".tmp",  # Default directory for temporary JSONL request files
+    "default_jsonl_dir": ".gemini_batch",  # Default directory for JSONL request files
+    "default_results_dir": ".gemini_batch",  # Default directory for JSONL result files
 }
 
 # --- Image Processing Settings ---

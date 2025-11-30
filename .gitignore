@@ -54,9 +54,8 @@ Thumbs.db
 *.png
 *.jpg
 *.jpeg
-batch_requests_*.jsonl
-batch_extraction_requests_*.jsonl
-.tmp/
+batch_*.jsonl
+.gemini_batch/
 
 # Environment variables
 .env
