@@ -375,6 +375,7 @@ def parse_batch_results(
                             'totalTokenCount': getattr(response.usage_metadata, 'total_token_count', None),
                             'promptTokenCount': getattr(response.usage_metadata, 'prompt_token_count', None),
                             'candidatesTokenCount': getattr(response.usage_metadata, 'candidates_token_count', None),
+                            'cachedContentTokenCount': getattr(response.usage_metadata, 'cached_content_token_count', None),
                             'thoughtsTokenCount': getattr(response.usage_metadata, 'thoughts_token_count', None),
                         }
                     if hasattr(response, 'model_version'):

@@ -23,7 +23,7 @@ from .batch import (
 )
 from .aggregation import aggregate_records, ListVoteConfig, MajorityVoteResult
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = [
     "batch_process",
     "create_batch_job",

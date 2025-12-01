@@ -376,6 +376,7 @@ def test_parse_batch_results_with_metadata(tmp_path):
                     "totalTokenCount": 100,
                     "promptTokenCount": 20,
                     "candidatesTokenCount": 75,
+                    "cachedContentTokenCount": 15,
                     "thoughtsTokenCount": 5
                 },
                 "modelVersion": "gemini-2.5-flash"
@@ -395,6 +396,7 @@ def test_parse_batch_results_with_metadata(tmp_path):
                     "totalTokenCount": 150,
                     "promptTokenCount": 30,
                     "candidatesTokenCount": 120,
+                    "cachedContentTokenCount": 0,
                     "thoughtsTokenCount": 0
                 },
                 "modelVersion": "gemini-2.5-flash"
@@ -419,9 +421,11 @@ def test_parse_batch_results_with_metadata(tmp_path):
     # Verify metadata
     assert len(metadata) == 2
     assert metadata[0]['usageMetadata']['totalTokenCount'] == 100
+    assert metadata[0]['usageMetadata']['cachedContentTokenCount'] == 15
     assert metadata[0]['usageMetadata']['thoughtsTokenCount'] == 5
     assert metadata[0]['modelVersion'] == "gemini-2.5-flash"
     assert metadata[1]['usageMetadata']['totalTokenCount'] == 150
+    assert metadata[1]['usageMetadata']['cachedContentTokenCount'] == 0
     assert metadata[1]['usageMetadata']['thoughtsTokenCount'] == 0
     assert metadata[1]['modelVersion'] == "gemini-2.5-flash"
 
@@ -888,6 +892,54 @@ def test_parse_batch_results_alignment_with_metadata(tmp_path):
     assert metadata[1] is None  # None metadata for failed result
     assert parsed[2].name == "R3"
     assert metadata[2]['usageMetadata']['totalTokenCount'] == 200
+
+
+def test_parse_batch_results_with_genai_response_objects():
+    """Test parsing results with genai response objects (not dicts) including cachedContentTokenCount."""
+    # Create mock genai response objects
+    mock_usage_metadata = Mock()
+    mock_usage_metadata.total_token_count = 150
+    mock_usage_metadata.prompt_token_count = 50
+    mock_usage_metadata.candidates_token_count = 90
+    mock_usage_metadata.cached_content_token_count = 30
+    mock_usage_metadata.thoughts_token_count = 10
+
+    mock_part = Mock()
+    mock_part.text = '{"name": "Test", "value": 42}'
+
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_candidate = Mock()
+    mock_candidate.content = mock_content
+
+    mock_response = Mock()
+    mock_response.candidates = [mock_candidate]
+    mock_response.usage_metadata = mock_usage_metadata
+    mock_response.model_version = "gemini-2.0-flash"
+
+    results_data = [
+        {
+            "key": "req1",
+            "response": mock_response
+        }
+    ]
+
+    parsed, metadata = parse_batch_results(results_data, TestSchema, return_metadata=True)
+
+    # Verify parsed result
+    assert len(parsed) == 1
+    assert parsed[0].name == "Test"
+    assert parsed[0].value == 42
+
+    # Verify metadata includes all fields including cachedContentTokenCount
+    assert len(metadata) == 1
+    assert metadata[0]['usageMetadata']['totalTokenCount'] == 150
+    assert metadata[0]['usageMetadata']['promptTokenCount'] == 50
+    assert metadata[0]['usageMetadata']['candidatesTokenCount'] == 90
+    assert metadata[0]['usageMetadata']['cachedContentTokenCount'] == 30
+    assert metadata[0]['usageMetadata']['thoughtsTokenCount'] == 10
+    assert metadata[0]['modelVersion'] == "gemini-2.0-flash"
 
 
 def test_extract_timestamp_from_display_name():
