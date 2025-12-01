@@ -611,3 +611,68 @@ def test_calculate_token_statistics_with_cached_and_thoughts():
     # Verify other fields are also correct
     assert stats.total_tokens == 4500
     assert stats.avg_total_tokens == 2250.0
+
+
+def test_calculate_token_statistics_verbose(capsys):
+    """Test token statistics verbose output."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1500,
+                'promptTokenCount': 1000,
+                'candidatesTokenCount': 500,
+                'cachedContentTokenCount': 100,
+                'thoughtsTokenCount': 50,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        {
+            'usageMetadata': {
+                'totalTokenCount': 2000,
+                'promptTokenCount': 1200,
+                'candidatesTokenCount': 800,
+                'cachedContentTokenCount': 200,
+                'thoughtsTokenCount': 100,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+    ]
+
+    stats = calculate_token_statistics(metadata_list, verbose=True)
+    captured = capsys.readouterr()
+
+    # Verify the output contains expected content
+    assert "TOKEN STATISTICS SUMMARY" in captured.out
+    assert "2/2 successful" in captured.out
+    assert "Prompt Tokens" in captured.out
+    assert "Candidates Tokens" in captured.out
+    assert "TOTAL TOKENS" in captured.out
+    assert "3,500" in captured.out  # Total tokens
+    assert "1,750.0" in captured.out  # Average total tokens
+
+    # Verify stats object is still returned correctly
+    assert stats.total_requests == 2
+    assert stats.successful_requests == 2
+    assert stats.total_tokens == 3500
+
+
+def test_calculate_token_statistics_verbose_no_successful(capsys):
+    """Test token statistics verbose output when all requests failed."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [None, None]
+
+    stats = calculate_token_statistics(metadata_list, verbose=True)
+    captured = capsys.readouterr()
+
+    # Verify the output shows N/A for averages
+    assert "TOKEN STATISTICS SUMMARY" in captured.out
+    assert "0/2 successful" in captured.out
+    assert "N/A" in captured.out  # Averages should show N/A
+
+    # Verify stats object is still returned correctly
+    assert stats.total_requests == 2
+    assert stats.successful_requests == 0
+    assert stats.avg_total_tokens is None

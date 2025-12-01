@@ -431,7 +431,8 @@ def build_generation_config(
 
 
 def calculate_token_statistics(
-    metadata_list: List[Union[Dict[str, Any], None]]
+    metadata_list: List[Union[Dict[str, Any], None]],
+    verbose: bool = False
 ) -> TokenStatistics:
     """
     Calculate token usage statistics from batch processing metadata.
@@ -444,6 +445,7 @@ def calculate_token_statistics(
         metadata_list: List of metadata dictionaries from batch_process(), where
             each entry is either a dict with 'usageMetadata' or None (for failed requests).
             Structure: {'usageMetadata': {'totalTokenCount': int, ...}, 'modelVersion': str}
+        verbose: If True, prints a summary of totals and averages per prompt to stdout.
 
     Returns:
         TokenStatistics object containing aggregated token usage statistics including:
@@ -458,6 +460,10 @@ def calculate_token_statistics(
         >>> print(f"Total tokens: {stats.total_tokens}")
         >>> print(f"Average per request: {stats.avg_total_tokens}")
         >>> print(f"Success rate: {stats.successful_requests}/{stats.total_requests}")
+        >>>
+        >>> # With verbose output
+        >>> stats = calculate_token_statistics(metadata, verbose=True)
+        # Prints summary table with totals and averages
     """
     # Initialize counters
     total_requests = len(metadata_list)
@@ -507,6 +513,23 @@ def calculate_token_statistics(
         avg_total_tokens = None
         avg_cached_tokens = None
         avg_thoughts_tokens = None
+
+    # Print verbose output if requested
+    if verbose:
+        print("\n" + "=" * 60)
+        print("TOKEN STATISTICS SUMMARY")
+        print("=" * 60)
+        print(f"Requests: {successful_requests}/{total_requests} successful ({failed_requests} failed)")
+        print("-" * 60)
+        print(f"{'Metric':<25} {'Total':>15} {'Avg/Prompt':>15}")
+        print("-" * 60)
+        print(f"{'Prompt Tokens':<25} {total_prompt_tokens:>15,} {avg_prompt_tokens:>15,.1f}" if avg_prompt_tokens else f"{'Prompt Tokens':<25} {total_prompt_tokens:>15,} {'N/A':>15}")
+        print(f"{'Cached Tokens':<25} {total_cached_tokens:>15,} {avg_cached_tokens:>15,.1f}" if avg_cached_tokens else f"{'Cached Tokens':<25} {total_cached_tokens:>15,} {'N/A':>15}")
+        print(f"{'Output Tokens':<25} {total_candidates_tokens:>15,} {avg_candidates_tokens:>15,.1f}" if avg_candidates_tokens else f"{'Output Tokens':<25} {total_candidates_tokens:>15,} {'N/A':>15}")
+        print(f"{'Reason Tokens':<25} {total_thoughts_tokens:>15,} {avg_thoughts_tokens:>15,.1f}" if avg_thoughts_tokens else f"{'Reason Tokens':<25} {total_thoughts_tokens:>15,} {'N/A':>15}")
+        print("-" * 60)
+        print(f"{'TOTAL TOKENS':<25} {total_tokens:>15,} {avg_total_tokens:>15,.1f}" if avg_total_tokens else f"{'TOTAL TOKENS':<25} {total_tokens:>15,} {'N/A':>15}")
+        print("=" * 60 + "\n")
 
     return TokenStatistics(
         total_requests=total_requests,
