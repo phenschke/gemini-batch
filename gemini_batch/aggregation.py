@@ -17,64 +17,7 @@ import enum
 
 from pydantic import BaseModel
 
-Path = Tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ValueCount:
-    """Count of how many samples voted for a given value."""
-    value: Any
-    count: int
-
-
-@dataclass
-class FieldVote:
-    """Agreement statistics for a specific JSON path."""
-    path: Path
-    value: Any
-    total: int
-    counts: List[ValueCount]
-
-    @property
-    def agreement(self) -> float:
-        if not self.counts or self.total == 0:
-            return 0.0
-        return self.counts[0].count / self.total
-
-    @property
-    def is_tie(self) -> bool:
-        if len(self.counts) < 2:
-            return False
-        top = self.counts[0].count
-        return any(c.count == top for c in self.counts[1:])
-
-
-@dataclass(frozen=True)
-class ListVoteConfig:
-    """
-    Configure how list items should be aligned before voting.
-
-    Attributes:
-        match_on: Optional tuple of dotted field paths used to align list items that
-            describe the same entity across samples. When omitted, items are aligned
-            purely by index order.
-        require_all_fields: When True, only use the match key if *all* match_on fields
-            are present and non-empty; otherwise fall back to index alignment.
-    """
-    match_on: Optional[Tuple[str, ...]] = None
-    require_all_fields: bool = False
-
-
-@dataclass
-class MajorityVoteResult:
-    """Result of aggregating multiple structured samples."""
-    aggregated: Any
-    field_votes: Dict[Path, FieldVote]
-    n_samples: int
-
-    def disagreements(self) -> Dict[Path, FieldVote]:
-        """Return only the paths where agreement is not unanimous."""
-        return {path: vote for path, vote in self.field_votes.items() if vote.agreement < 1.0}
+from .types import Path, ValueCount, FieldVote, ListVoteConfig, MajorityVoteResult
 
 
 class MajorityVoteAggregator:

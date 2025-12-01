@@ -17,6 +17,7 @@ import pymupdf as fitz
 import logging
 
 from . import config
+from .types import TokenStatistics
 
 # Logging configuration
 def setup_logging(level: int = logging.INFO, format_string: str = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s", filename: Optional[str] = None) -> logging.Logger:
@@ -427,29 +428,6 @@ def build_generation_config(
         gen_config_dict["media_resolution"] = media_resolution
 
     return types.GenerateContentConfig(**gen_config_dict)
-
-
-class TokenStatistics(BaseModel):
-    """Token usage statistics aggregated from batch processing metadata."""
-
-    # Request counts
-    total_requests: int
-    successful_requests: int
-    failed_requests: int
-
-    # Total token counts (sum across all successful requests)
-    total_prompt_tokens: int
-    total_candidates_tokens: int
-    total_tokens: int
-    total_cached_tokens: int
-    total_thoughts_tokens: int
-
-    # Average tokens per successful request (None if no successful requests)
-    avg_prompt_tokens: Optional[float]
-    avg_candidates_tokens: Optional[float]
-    avg_total_tokens: Optional[float]
-    avg_cached_tokens: Optional[float]
-    avg_thoughts_tokens: Optional[float]
 
 
 def calculate_token_statistics(
