@@ -22,6 +22,7 @@ from .batch import (
     parse_batch_results,
 )
 from .aggregation import aggregate_records, ListVoteConfig, MajorityVoteResult
+from .utils import calculate_token_statistics, TokenStatistics
 
 __version__ = "0.4.1"
 __all__ = [
@@ -34,6 +35,8 @@ __all__ = [
     "aggregate_records",
     "ListVoteConfig",
     "MajorityVoteResult",
+    "calculate_token_statistics",
+    "TokenStatistics",
 ]
 
 

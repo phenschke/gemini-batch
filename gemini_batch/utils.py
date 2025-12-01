@@ -6,7 +6,7 @@ import os
 import io
 import re
 import mimetypes
-from typing import Union, Optional, List, Type, Dict
+from typing import Union, Optional, List, Type, Dict, Any
 from pathlib import Path
 from pydantic import BaseModel
 from PIL import Image
@@ -427,3 +427,121 @@ def build_generation_config(
         gen_config_dict["media_resolution"] = media_resolution
 
     return types.GenerateContentConfig(**gen_config_dict)
+
+
+class TokenStatistics(BaseModel):
+    """Token usage statistics aggregated from batch processing metadata."""
+
+    # Request counts
+    total_requests: int
+    successful_requests: int
+    failed_requests: int
+
+    # Total token counts (sum across all successful requests)
+    total_prompt_tokens: int
+    total_candidates_tokens: int
+    total_tokens: int
+    total_cached_tokens: int
+    total_thoughts_tokens: int
+
+    # Average tokens per successful request (None if no successful requests)
+    avg_prompt_tokens: Optional[float]
+    avg_candidates_tokens: Optional[float]
+    avg_total_tokens: Optional[float]
+    avg_cached_tokens: Optional[float]
+    avg_thoughts_tokens: Optional[float]
+
+
+def calculate_token_statistics(
+    metadata_list: List[Union[Dict[str, Any], None]]
+) -> TokenStatistics:
+    """
+    Calculate token usage statistics from batch processing metadata.
+
+    This function aggregates token counts from the metadata returned by
+    batch_process(return_metadata=True), providing both total and average
+    statistics across all requests.
+
+    Args:
+        metadata_list: List of metadata dictionaries from batch_process(), where
+            each entry is either a dict with 'usageMetadata' or None (for failed requests).
+            Structure: {'usageMetadata': {'totalTokenCount': int, ...}, 'modelVersion': str}
+
+    Returns:
+        TokenStatistics object containing aggregated token usage statistics including:
+        - Request counts (total, successful, failed)
+        - Total token counts across all successful requests
+        - Average tokens per successful request
+
+    Examples:
+        >>> from gemini_batch import batch_process, calculate_token_statistics
+        >>> results, metadata = batch_process(prompts, schema, return_metadata=True)
+        >>> stats = calculate_token_statistics(metadata)
+        >>> print(f"Total tokens: {stats.total_tokens}")
+        >>> print(f"Average per request: {stats.avg_total_tokens}")
+        >>> print(f"Success rate: {stats.successful_requests}/{stats.total_requests}")
+    """
+    # Initialize counters
+    total_requests = len(metadata_list)
+    successful_requests = 0
+    failed_requests = 0
+
+    # Initialize token totals
+    total_prompt_tokens = 0
+    total_candidates_tokens = 0
+    total_tokens = 0
+    total_cached_tokens = 0
+    total_thoughts_tokens = 0
+
+    # Single-pass iteration through metadata
+    for metadata in metadata_list:
+        # Check if entry is None or missing usageMetadata
+        if metadata is None:
+            failed_requests += 1
+            continue
+
+        if 'usageMetadata' not in metadata:
+            failed_requests += 1
+            logger.warning("Metadata entry missing 'usageMetadata' field, treating as failed request")
+            continue
+
+        # Entry is successful, extract usage data
+        successful_requests += 1
+        usage = metadata['usageMetadata']
+
+        # Accumulate token counts (handle None values by treating as 0)
+        total_prompt_tokens += (usage.get('promptTokenCount') or 0)
+        total_candidates_tokens += (usage.get('candidatesTokenCount') or 0)
+        total_tokens += (usage.get('totalTokenCount') or 0)
+        total_cached_tokens += (usage.get('cachedContentTokenCount') or 0)
+        total_thoughts_tokens += (usage.get('thoughtsTokenCount') or 0)
+
+    # Calculate averages (None if no successful requests)
+    if successful_requests > 0:
+        avg_prompt_tokens = total_prompt_tokens / successful_requests
+        avg_candidates_tokens = total_candidates_tokens / successful_requests
+        avg_total_tokens = total_tokens / successful_requests
+        avg_cached_tokens = total_cached_tokens / successful_requests
+        avg_thoughts_tokens = total_thoughts_tokens / successful_requests
+    else:
+        avg_prompt_tokens = None
+        avg_candidates_tokens = None
+        avg_total_tokens = None
+        avg_cached_tokens = None
+        avg_thoughts_tokens = None
+
+    return TokenStatistics(
+        total_requests=total_requests,
+        successful_requests=successful_requests,
+        failed_requests=failed_requests,
+        total_prompt_tokens=total_prompt_tokens,
+        total_candidates_tokens=total_candidates_tokens,
+        total_tokens=total_tokens,
+        total_cached_tokens=total_cached_tokens,
+        total_thoughts_tokens=total_thoughts_tokens,
+        avg_prompt_tokens=avg_prompt_tokens,
+        avg_candidates_tokens=avg_candidates_tokens,
+        avg_total_tokens=avg_total_tokens,
+        avg_cached_tokens=avg_cached_tokens,
+        avg_thoughts_tokens=avg_thoughts_tokens,
+    )

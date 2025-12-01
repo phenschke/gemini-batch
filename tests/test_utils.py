@@ -315,3 +315,299 @@ def test_extract_json_from_text_multiline_markdown():
     assert '{"name":"test"' in result.replace('\n', '').replace(' ', '')
     assert result.strip().startswith('{')
     assert result.strip().endswith('}')
+
+
+def test_calculate_token_statistics_all_successful():
+    """Test token statistics with all successful requests."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1500,
+                'promptTokenCount': 1000,
+                'candidatesTokenCount': 500,
+                'cachedContentTokenCount': 100,
+                'thoughtsTokenCount': 50,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        {
+            'usageMetadata': {
+                'totalTokenCount': 2000,
+                'promptTokenCount': 1200,
+                'candidatesTokenCount': 800,
+                'cachedContentTokenCount': 200,
+                'thoughtsTokenCount': 100,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+    ]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 2
+    assert stats.successful_requests == 2
+    assert stats.failed_requests == 0
+    assert stats.total_prompt_tokens == 2200
+    assert stats.total_candidates_tokens == 1300
+    assert stats.total_tokens == 3500
+    assert stats.total_cached_tokens == 300
+    assert stats.total_thoughts_tokens == 150
+    assert stats.avg_prompt_tokens == 1100.0
+    assert stats.avg_candidates_tokens == 650.0
+    assert stats.avg_total_tokens == 1750.0
+    assert stats.avg_cached_tokens == 150.0
+    assert stats.avg_thoughts_tokens == 75.0
+
+
+def test_calculate_token_statistics_with_failures():
+    """Test token statistics with mix of successful and failed requests."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1500,
+                'promptTokenCount': 1000,
+                'candidatesTokenCount': 500,
+                'cachedContentTokenCount': 0,
+                'thoughtsTokenCount': 0,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        None,  # Failed request
+        {
+            'usageMetadata': {
+                'totalTokenCount': 2000,
+                'promptTokenCount': 1200,
+                'candidatesTokenCount': 800,
+                'cachedContentTokenCount': 0,
+                'thoughtsTokenCount': 0,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        None,  # Failed request
+    ]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 4
+    assert stats.successful_requests == 2
+    assert stats.failed_requests == 2
+    assert stats.total_prompt_tokens == 2200
+    assert stats.total_candidates_tokens == 1300
+    assert stats.total_tokens == 3500
+    # Averages should be based on successful requests only
+    assert stats.avg_prompt_tokens == 1100.0
+    assert stats.avg_candidates_tokens == 650.0
+    assert stats.avg_total_tokens == 1750.0
+
+
+def test_calculate_token_statistics_all_failed():
+    """Test token statistics with all failed requests."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [None, None, None]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 3
+    assert stats.successful_requests == 0
+    assert stats.failed_requests == 3
+    assert stats.total_prompt_tokens == 0
+    assert stats.total_candidates_tokens == 0
+    assert stats.total_tokens == 0
+    assert stats.total_cached_tokens == 0
+    assert stats.total_thoughts_tokens == 0
+    # Averages should be None when no successful requests
+    assert stats.avg_prompt_tokens is None
+    assert stats.avg_candidates_tokens is None
+    assert stats.avg_total_tokens is None
+    assert stats.avg_cached_tokens is None
+    assert stats.avg_thoughts_tokens is None
+
+
+def test_calculate_token_statistics_empty_list():
+    """Test token statistics with empty metadata list."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = []
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 0
+    assert stats.successful_requests == 0
+    assert stats.failed_requests == 0
+    assert stats.total_prompt_tokens == 0
+    assert stats.total_candidates_tokens == 0
+    assert stats.total_tokens == 0
+    assert stats.total_cached_tokens == 0
+    assert stats.total_thoughts_tokens == 0
+    assert stats.avg_prompt_tokens is None
+    assert stats.avg_candidates_tokens is None
+    assert stats.avg_total_tokens is None
+    assert stats.avg_cached_tokens is None
+    assert stats.avg_thoughts_tokens is None
+
+
+def test_calculate_token_statistics_missing_usage_metadata():
+    """Test token statistics with missing usageMetadata field."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1000,
+                'promptTokenCount': 600,
+                'candidatesTokenCount': 400,
+                'cachedContentTokenCount': 0,
+                'thoughtsTokenCount': 0,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        {'modelVersion': 'gemini-2.5-flash'},  # Missing usageMetadata
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1500,
+                'promptTokenCount': 900,
+                'candidatesTokenCount': 600,
+                'cachedContentTokenCount': 0,
+                'thoughtsTokenCount': 0,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+    ]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 3
+    assert stats.successful_requests == 2
+    assert stats.failed_requests == 1
+    assert stats.total_prompt_tokens == 1500
+    assert stats.total_candidates_tokens == 1000
+    assert stats.total_tokens == 2500
+    assert stats.avg_prompt_tokens == 750.0
+    assert stats.avg_candidates_tokens == 500.0
+    assert stats.avg_total_tokens == 1250.0
+
+
+def test_calculate_token_statistics_none_token_values():
+    """Test token statistics with None values in token counts."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1000,
+                'promptTokenCount': 600,
+                'candidatesTokenCount': 400,
+                'cachedContentTokenCount': None,  # None value
+                'thoughtsTokenCount': None,  # None value
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1500,
+                'promptTokenCount': None,  # None value
+                'candidatesTokenCount': 600,
+                'cachedContentTokenCount': 50,
+                'thoughtsTokenCount': 25,
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+    ]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 2
+    assert stats.successful_requests == 2
+    assert stats.failed_requests == 0
+    # None values should be treated as 0
+    assert stats.total_prompt_tokens == 600  # 600 + 0
+    assert stats.total_candidates_tokens == 1000  # 400 + 600
+    assert stats.total_tokens == 2500  # 1000 + 1500
+    assert stats.total_cached_tokens == 50  # 0 + 50
+    assert stats.total_thoughts_tokens == 25  # 0 + 25
+
+
+def test_calculate_token_statistics_partial_token_data():
+    """Test token statistics with missing token type keys."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1000,
+                'promptTokenCount': 600,
+                'candidatesTokenCount': 400,
+                # Missing cachedContentTokenCount
+                # Missing thoughtsTokenCount
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        {
+            'usageMetadata': {
+                'totalTokenCount': 1500,
+                # Missing promptTokenCount
+                'candidatesTokenCount': 600,
+                'cachedContentTokenCount': 50,
+                # Missing thoughtsTokenCount
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+    ]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 2
+    assert stats.successful_requests == 2
+    assert stats.failed_requests == 0
+    # Missing keys should be treated as 0
+    assert stats.total_prompt_tokens == 600  # 600 + 0
+    assert stats.total_candidates_tokens == 1000  # 400 + 600
+    assert stats.total_tokens == 2500  # 1000 + 1500
+    assert stats.total_cached_tokens == 50  # 0 + 50
+    assert stats.total_thoughts_tokens == 0  # 0 + 0
+
+
+def test_calculate_token_statistics_with_cached_and_thoughts():
+    """Test token statistics focusing on cached and thinking tokens."""
+    from gemini_batch.utils import calculate_token_statistics
+
+    metadata_list = [
+        {
+            'usageMetadata': {
+                'totalTokenCount': 2000,
+                'promptTokenCount': 1000,
+                'candidatesTokenCount': 500,
+                'cachedContentTokenCount': 300,  # Significant cached tokens
+                'thoughtsTokenCount': 200,  # Thinking tokens
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+        {
+            'usageMetadata': {
+                'totalTokenCount': 2500,
+                'promptTokenCount': 1200,
+                'candidatesTokenCount': 600,
+                'cachedContentTokenCount': 400,  # Significant cached tokens
+                'thoughtsTokenCount': 300,  # Thinking tokens
+            },
+            'modelVersion': 'gemini-2.5-flash'
+        },
+    ]
+
+    stats = calculate_token_statistics(metadata_list)
+
+    assert stats.total_requests == 2
+    assert stats.successful_requests == 2
+    assert stats.failed_requests == 0
+    assert stats.total_cached_tokens == 700
+    assert stats.total_thoughts_tokens == 500
+    assert stats.avg_cached_tokens == 350.0
+    assert stats.avg_thoughts_tokens == 250.0
+    # Verify other fields are also correct
+    assert stats.total_tokens == 4500
+    assert stats.avg_total_tokens == 2250.0

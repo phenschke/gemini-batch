@@ -57,6 +57,15 @@ results = batch_process(prompts, schema, n_samples=3)
 results = batch_process(prompts, schema, media_resolution="MEDIA_RESOLUTION_HIGH")
 ```
 
+**Token statistics:** Analyze token usage across batches
+```python
+from gemini_batch import calculate_token_statistics
+results, metadata = batch_process(prompts, schema, return_metadata=True)
+stats = calculate_token_statistics(metadata)
+print(f"Total tokens: {stats.total_tokens}")
+print(f"Average per request: {stats.avg_total_tokens:.2f}")
+```
+
 ## Error Handling
 
 Failed requests return `None` while preserving input-output alignment:

@@ -158,7 +158,7 @@ All unit tests use mocked API responses and focus on individual components:
 - Schema validation errors are non-fatal
 - Complex mixed issues (markdown + malformed lines + validation errors)
 
-Run with: `pytest -m "not integration"`
+Run with: `.venv/bin/python -m pytest -m "not integration"`
 
 ### Integration Tests (Live API)
 
@@ -183,7 +183,7 @@ Integration tests verify the **three core batch workflows** with real API calls:
 - Auto-skips if `GEMINI_API_KEY` not set
 - Simple, illustrative examples of core functionality
 
-Run with: `pytest -m integration -v -s`
+Run with: `.venv/bin/python -m pytest -m integration -v -s`
 
 **Important**: These integration tests are essential for verifying the library works with the real Gemini Batch API, which can have quirks in response formats and behavior.
 
@@ -191,22 +191,24 @@ Run with: `pytest -m integration -v -s`
 
 ### Running Tests
 
+**Note**: This project uses `uv` for package management and virtual environment management. Tests should be run using `.venv/bin/python -m pytest` or through `uv` commands to ensure correct environment isolation.
+
 ```bash
 # Install dev dependencies
 pip install -e ".[dev]"
 
 # Unit tests only (fast)
-pytest -m "not integration"
+.venv/bin/python -m pytest -m "not integration"
 
 # Integration tests (requires API key)
 export GEMINI_API_KEY="your-key"
-pytest -m integration -v -s
+.venv/bin/python -m pytest -m integration -v -s
 
 # All tests
-pytest
+.venv/bin/python -m pytest
 
 # With coverage
-pytest -m "not integration" --cov=gemini_batch
+.venv/bin/python -m pytest -m "not integration" --cov=gemini_batch
 ```
 
 ### Adding New Features
