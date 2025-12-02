@@ -2,11 +2,17 @@
 
 Batch processing for Google Gemini API with structured Pydantic output. 50% cheaper than standard API.
 
+Supports both **Gemini Developer API** and **Vertex AI** backends.
+
 ## Installation
 
 ```bash
+# Standard (Gemini Developer API)
 pip install gemini-batch
 export GEMINI_API_KEY="your-api-key"
+
+# With Vertex AI support (Google Cloud)
+pip install gemini-batch[vertexai]
 ```
 
 ## Quick Start
@@ -66,6 +72,50 @@ print(f"Total tokens: {stats.total_tokens}")
 print(f"Average per request: {stats.avg_total_tokens:.2f}")
 ```
 
+## Vertex AI Support
+
+Use Google Cloud Vertex AI instead of the Gemini Developer API. Vertex AI uses Google Cloud Storage (GCS) for file handling instead of the File API.
+
+### Setup
+
+```bash
+# Install with Vertex AI support
+pip install gemini-batch[vertexai]
+
+# Authenticate with Google Cloud
+gcloud auth application-default login
+
+# Set required environment variables
+export GOOGLE_GENAI_USE_VERTEXAI=true
+export GOOGLE_CLOUD_PROJECT=your-project-id
+```
+
+### Usage
+
+```python
+# Option 1: Via environment variables (recommended)
+# With GOOGLE_GENAI_USE_VERTEXAI=true set:
+results = batch_process(prompts, schema)
+
+# Option 2: Explicit parameters
+results = batch_process(
+    prompts,
+    schema,
+    vertexai=True,
+    project="your-gcp-project",
+    location="us-central1",  # Optional, defaults to us-central1
+    gcs_bucket="my-batch-bucket",  # Optional, auto-created if not specified
+)
+```
+
+### How It Works
+
+When using Vertex AI:
+- Files (images, JSONL) are uploaded to GCS instead of File API
+- Batch results are stored in GCS and downloaded automatically
+- GCS buckets are auto-created if they don't exist (configurable)
+- Authentication uses Application Default Credentials (ADC)
+
 ## Error Handling
 
 Failed requests return `None` while preserving input-output alignment:
@@ -83,4 +133,4 @@ pytest -m "not integration"  # Unit tests (mocked)
 pytest -m integration        # Integration tests (live API, < $0.01)
 ```
 
-[API Docs](https://ai.google.dev/gemini-api/docs/batch-api) • [Issues](https://github.com/phenschke/gemini-batch/issues)
+[Gemini Batch API Docs](https://ai.google.dev/gemini-api/docs/batch-api) • [Vertex AI Batch Docs](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction) • [Issues](https://github.com/phenschke/gemini-batch/issues)

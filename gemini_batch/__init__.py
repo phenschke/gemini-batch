@@ -3,6 +3,12 @@ gemini-batch: Simple batch processing library for Google Gemini API.
 
 Provides a single-function interface for processing large volumes of requests
 with structured output at 50% cost savings.
+
+Supports both:
+- Gemini Developer API (default): Uses File API for storage
+- Vertex AI: Uses Google Cloud Storage (GCS) for storage
+
+For Vertex AI, install with: pip install gemini-batch[vertexai]
 """
 
 from typing import Union, Optional, List, Type, Dict, Any
@@ -22,10 +28,17 @@ from .batch import (
     parse_batch_results,
 )
 from .aggregation import aggregate_records
-from .utils import calculate_token_statistics
+from .utils import (
+    calculate_token_statistics,
+    GeminiClient,
+    upload_file_for_batch,
+    upload_to_gcs,
+    download_from_gcs,
+    list_gcs_blobs,
+)
 from .types import ListVoteConfig, MajorityVoteResult, TokenStatistics
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 __all__ = [
     "batch_process",
     "create_batch_job",
@@ -38,6 +51,12 @@ __all__ = [
     "MajorityVoteResult",
     "calculate_token_statistics",
     "TokenStatistics",
+    # Vertex AI / GCS utilities
+    "GeminiClient",
+    "upload_file_for_batch",
+    "upload_to_gcs",
+    "download_from_gcs",
+    "list_gcs_blobs",
 ]
 
 
@@ -53,19 +72,28 @@ def batch_process(
     jsonl_dir: Optional[str] = None,
     return_metadata: bool = False,
     media_resolution: Optional[str] = None,
+    # Vertex AI parameters
+    vertexai: Optional[bool] = None,
+    project: Optional[str] = None,
+    location: Optional[str] = None,
+    gcs_bucket: Optional[str] = None,
     **generation_kwargs
 ) -> Union[List[BaseModel], List[str], str, tuple]:
     """
     Process prompts through Gemini Batch API with structured or raw text output.
 
     This is the main entry point for the library. It handles mixed text and image
-    content, automatically uploads files to Gemini File API, and manages batch
-    job creation, monitoring, and result parsing.
+    content, automatically uploads files, and manages batch job creation,
+    monitoring, and result parsing.
+
+    Supports both backends:
+    - Gemini Developer API (default): Uses File API for storage
+    - Vertex AI: Uses Google Cloud Storage (GCS) for storage
 
     Args:
         prompts: List of prompts, where each prompt is a list of parts that can be:
             - str: Text content
-            - pathlib.Path: Image file paths (auto-uploaded to File API)
+            - pathlib.Path: Image file paths (auto-uploaded)
             - Image.Image: PIL images (auto-uploaded)
             - bytes: Raw image data (auto-uploaded)
             Each inner list represents one batch request with mixed text/image content.
@@ -83,6 +111,12 @@ def batch_process(
             - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed
             - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost
             Controls quality vs cost tradeoff for media processing.
+        vertexai: If True, use Vertex AI backend with GCS. If None, auto-detect from
+                  GOOGLE_GENAI_USE_VERTEXAI env var. (Default: Gemini Developer API)
+        project: GCP project ID (Vertex AI only). Falls back to GOOGLE_CLOUD_PROJECT env var.
+        location: GCP region (Vertex AI only). Falls back to GOOGLE_CLOUD_LOCATION env var,
+                  then defaults to "us-central1".
+        gcs_bucket: GCS bucket name for file storage (Vertex AI only). Auto-created if needed.
         **generation_kwargs: Additional generation config (temperature, max_output_tokens, etc.)
 
     Returns:
@@ -98,7 +132,7 @@ def batch_process(
         >>> from pydantic import BaseModel
         >>> from pathlib import Path
         >>>
-        >>> # Raw text mode (no schema)
+        >>> # Raw text mode (no schema) - Gemini Developer API (default)
         >>> prompts = [
         ...     ["What is 2+2?"],
         ...     ["What is the capital of France?"]
@@ -110,12 +144,19 @@ def batch_process(
         ...     name: str
         ...     ingredients: List[str]
         >>>
-        >>> # Simple text-only prompts
-        >>> prompts = [
-        ...     ["Give me a recipe for pancakes"],
-        ...     ["Give me a recipe for cookies"]
-        ... ]
-        >>> results = batch_process(prompts, Recipe, wait=True)
+        >>> # Using Vertex AI backend
+        >>> results = batch_process(
+        ...     prompts,
+        ...     Recipe,
+        ...     vertexai=True,
+        ...     project="my-gcp-project",
+        ...     gcs_bucket="my-batch-bucket"
+        ... )
+        >>>
+        >>> # Or via environment variables:
+        >>> # export GOOGLE_GENAI_USE_VERTEXAI=true
+        >>> # export GOOGLE_CLOUD_PROJECT=my-gcp-project
+        >>> results = batch_process(prompts, Recipe)
         >>>
         >>> # Mixed text and images
         >>> prompts = [
@@ -124,15 +165,6 @@ def batch_process(
         ... ]
         >>> results = batch_process(prompts, Recipe, n_samples=3)
         >>>
-        >>> # Complex multimodal prompts
-        >>> from PIL import Image
-        >>> img = Image.open("recipe.jpg")
-        >>> prompts = [
-        ...     ["You are a recipe extraction expert. ", img, " Extract the recipe name and ingredients."]
-        ... ]
-        >>> results = batch_process(prompts, Recipe)
-        >>>
-        >>>
         >>> # Async mode
         >>> job_name = batch_process(prompts, Recipe, wait=False)
         >>> # ... check status later ...
@@ -140,9 +172,13 @@ def batch_process(
         >>> state = monitor_batch_job(job_name)
         >>> results = parse_batch_results("results.jsonl", Recipe)
     """
-    # Initialize Gemini client for file uploads
-    gemini_client = utils.GeminiClient()
-    client = gemini_client.client
+    # Initialize Gemini client (auto-detects backend from params or env vars)
+    gemini_client = utils.GeminiClient(
+        vertexai=vertexai,
+        project=project,
+        location=location,
+        gcs_bucket=gcs_bucket,
+    )
 
     # Build requests from prompts
     requests = []
@@ -157,8 +193,8 @@ def batch_process(
                     # Text content
                     content_parts.append({"text": part})
                 elif isinstance(part, (Path, Image.Image, bytes)):
-                    # File content - upload to File API
-                    file_info = utils.upload_file_to_gemini(part, client)
+                    # File content - upload to appropriate storage (GCS or File API)
+                    file_info = utils.upload_file_for_batch(part, gemini_client)
                     content_parts.append({
                         "file_data": {
                             "file_uri": file_info["uri"],
@@ -175,7 +211,7 @@ def batch_process(
             request = {
                 "key": request_key,
                 "request": {
-                    "contents": [{"parts": content_parts}]
+                    "contents": [{"role": "user", "parts": content_parts}]
                 }
             }
             requests.append(request)
@@ -194,19 +230,20 @@ def batch_process(
         job_display_name=job_display_name,
         generation_config=gen_config,
         jsonl_dir=jsonl_dir,
+        client=gemini_client,
     )
 
     if not wait:
         return job_name
 
     # Wait for completion
-    final_state = monitor_batch_job(job_name, poll_interval)
+    final_state = monitor_batch_job(job_name, poll_interval, client=gemini_client)
 
     if final_state != 'JOB_STATE_SUCCEEDED':
         raise RuntimeError(f"Batch job failed with state: {final_state}")
 
     # Get results (always file-based)
-    results_file = download_batch_results(job_name, output_dir)
+    results_file = download_batch_results(job_name, output_dir, client=gemini_client)
     parsed = parse_batch_results(results_file, schema, return_metadata=return_metadata)
 
     # Handle n_samples > 1: group results by prompt and aggregate

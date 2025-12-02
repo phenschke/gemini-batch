@@ -37,3 +37,17 @@ MEDIA_RESOLUTION_OPTIONS = {
     "MEDIUM": "MEDIA_RESOLUTION_MEDIUM", # Balanced detail, cost, and speed
     "HIGH": "MEDIA_RESOLUTION_HIGH",     # Higher token usage, more detail, increased latency/cost
 }
+
+# --- Vertex AI Settings ---
+# Configuration for Google Cloud Vertex AI backend (alternative to Gemini Developer API)
+# Environment variable fallbacks:
+#   GOOGLE_GENAI_USE_VERTEXAI: "true" to enable Vertex AI
+#   GOOGLE_CLOUD_PROJECT: GCP project ID
+#   GOOGLE_CLOUD_LOCATION: GCP region (default: us-central1)
+VERTEXAI_CONFIG = {
+    "project": None,  # GCP project ID (falls back to GOOGLE_CLOUD_PROJECT env var)
+    "location": "us-central1",  # GCP region (falls back to GOOGLE_CLOUD_LOCATION env var)
+    "gcs_bucket": None,  # GCS bucket name for file storage (auto-created if doesn't exist)
+    "auto_create_bucket": True,  # Whether to auto-create GCS bucket if it doesn't exist
+    "bucket_location": "US",  # Location for auto-created buckets
+}

@@ -6,7 +6,9 @@ import os
 import io
 import re
 import mimetypes
-from typing import Union, Optional, List, Type, Dict, Any
+import tempfile
+import uuid
+from typing import Union, Optional, List, Type, Dict, Any, Tuple
 from pathlib import Path
 from pydantic import BaseModel
 from PIL import Image
@@ -18,6 +20,14 @@ import logging
 
 from . import config
 from .types import TokenStatistics
+
+# Optional GCS import for Vertex AI support
+try:
+    from google.cloud import storage as gcs_storage
+    HAS_GCS = True
+except ImportError:
+    HAS_GCS = False
+    gcs_storage = None
 
 # Logging configuration
 def setup_logging(level: int = logging.INFO, format_string: str = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s", filename: Optional[str] = None) -> logging.Logger:
@@ -150,18 +160,380 @@ def extract_json_from_text(text: str) -> Optional[str]:
 
 
 class GeminiClient:
-    """Wrapper for Gemini client with reusable connection."""
+    """
+    Wrapper for Gemini client with reusable connection.
     
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or get_api_key()
+    Supports both Gemini Developer API (default) and Vertex AI backends.
+    Backend selection:
+    - Explicitly via vertexai=True parameter
+    - Via GOOGLE_GENAI_USE_VERTEXAI="true" environment variable
+    
+    For Vertex AI, authentication uses Application Default Credentials (ADC).
+    Set up with: gcloud auth application-default login
+    """
+    
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        vertexai: Optional[bool] = None,
+        project: Optional[str] = None,
+        location: Optional[str] = None,
+        gcs_bucket: Optional[str] = None,
+    ):
+        """
+        Initialize Gemini client.
+        
+        Args:
+            api_key: Gemini API key (for Developer API). Falls back to GEMINI_API_KEY env var.
+            vertexai: If True, use Vertex AI backend. If None, auto-detect from
+                      GOOGLE_GENAI_USE_VERTEXAI env var.
+            project: GCP project ID (for Vertex AI). Falls back to GOOGLE_CLOUD_PROJECT env var.
+            location: GCP region (for Vertex AI). Falls back to GOOGLE_CLOUD_LOCATION env var,
+                      then to config default (us-central1).
+            gcs_bucket: GCS bucket name for file storage (Vertex AI only). Falls back to
+                        config default. Will be auto-created if it doesn't exist.
+        """
+        # Determine backend
+        if vertexai is None:
+            self.vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+        else:
+            self.vertexai = vertexai
+        
+        if self.vertexai:
+            # Vertex AI configuration
+            self.project = (
+                project
+                or os.getenv("GOOGLE_CLOUD_PROJECT")
+                or config.VERTEXAI_CONFIG["project"]
+            )
+            self.location = (
+                location
+                or os.getenv("GOOGLE_CLOUD_LOCATION")
+                or config.VERTEXAI_CONFIG["location"]
+            )
+            self.gcs_bucket = gcs_bucket or config.VERTEXAI_CONFIG["gcs_bucket"]
+            self.api_key = None
+            
+            if not self.project:
+                raise ValueError(
+                    "Vertex AI requires a GCP project. Set via project parameter, "
+                    "GOOGLE_CLOUD_PROJECT env var, or config.VERTEXAI_CONFIG['project']"
+                )
+            
+            logger.info(f"Using Vertex AI backend: project={self.project}, location={self.location}")
+        else:
+            # Gemini Developer API configuration
+            self.api_key = api_key or get_api_key()
+            self.project = None
+            self.location = None
+            self.gcs_bucket = None
+            logger.info("Using Gemini Developer API backend")
+        
         self._client = None
+        self._gcs_client = None
     
     @property
     def client(self) -> genai.Client:
         """Get or create Gemini client."""
         if self._client is None:
-            self._client = genai.Client(api_key=self.api_key)
+            if self.vertexai:
+                self._client = genai.Client(
+                    vertexai=True,
+                    project=self.project,
+                    location=self.location,
+                )
+            else:
+                self._client = genai.Client(api_key=self.api_key)
         return self._client
+    
+    @property
+    def gcs_client(self):
+        """Get or create GCS client (Vertex AI only)."""
+        if not self.vertexai:
+            raise RuntimeError("GCS client is only available in Vertex AI mode")
+        
+        if not HAS_GCS:
+            raise ImportError(
+                "google-cloud-storage is required for Vertex AI support. "
+                "Install it with: pip install gemini-batch[vertexai]"
+            )
+        
+        if self._gcs_client is None:
+            self._gcs_client = gcs_storage.Client(project=self.project)
+        return self._gcs_client
+    
+    def get_gcs_bucket_name(self) -> str:
+        """
+        Get or generate GCS bucket name for this client.
+        
+        Returns:
+            Bucket name string. If gcs_bucket was provided, returns that.
+            Otherwise generates: gemini-batch-{project_id}
+        """
+        if not self.vertexai:
+            raise RuntimeError("GCS bucket is only available in Vertex AI mode")
+        
+        if self.gcs_bucket:
+            return self.gcs_bucket
+        
+        # Generate default bucket name
+        return f"gemini-batch-{self.project}"
+    
+    def ensure_gcs_bucket(self, bucket_name: Optional[str] = None) -> str:
+        """
+        Ensure GCS bucket exists, creating it if necessary.
+        
+        Args:
+            bucket_name: Bucket name to use. If None, uses get_gcs_bucket_name().
+        
+        Returns:
+            Bucket name that was ensured to exist.
+        """
+        if not self.vertexai:
+            raise RuntimeError("GCS bucket operations are only available in Vertex AI mode")
+        
+        bucket_name = bucket_name or self.get_gcs_bucket_name()
+        gcs = self.gcs_client
+        
+        try:
+            bucket = gcs.get_bucket(bucket_name)
+            logger.info(f"Using existing GCS bucket: {bucket_name}")
+        except Exception:
+            # Bucket doesn't exist, create it
+            if not config.VERTEXAI_CONFIG.get("auto_create_bucket", True):
+                raise ValueError(
+                    f"GCS bucket '{bucket_name}' does not exist and auto_create_bucket is disabled. "
+                    f"Create the bucket manually or enable auto_create_bucket in config."
+                )
+            
+            bucket_location = config.VERTEXAI_CONFIG.get("bucket_location", "US")
+            logger.info(f"Creating GCS bucket: {bucket_name} in location {bucket_location}")
+            bucket = gcs.create_bucket(bucket_name, location=bucket_location)
+            logger.info(f"Created GCS bucket: {bucket_name}")
+        
+        # Update client's bucket reference
+        self.gcs_bucket = bucket_name
+        return bucket_name
+
+
+# ============================================================================
+# GCS Utilities (for Vertex AI backend)
+# ============================================================================
+
+def upload_to_gcs(
+    gemini_client: "GeminiClient",
+    file: Union[Path, Image.Image, bytes, str],
+    destination_blob_name: Optional[str] = None,
+    bucket_name: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Upload a file to Google Cloud Storage.
+    
+    Args:
+        gemini_client: GeminiClient instance (must be in Vertex AI mode)
+        file: File to upload - pathlib.Path, PIL.Image.Image, bytes, or str (file path)
+        destination_blob_name: Name for the blob in GCS. Auto-generated if None.
+        bucket_name: GCS bucket name. Uses client's bucket if None.
+    
+    Returns:
+        Dictionary with 'uri' (gs:// URI) and 'mime_type'
+    
+    Raises:
+        RuntimeError: If client is not in Vertex AI mode
+        ImportError: If google-cloud-storage is not installed
+    """
+    if not gemini_client.vertexai:
+        raise RuntimeError("upload_to_gcs requires Vertex AI mode")
+    
+    if not HAS_GCS:
+        raise ImportError(
+            "google-cloud-storage is required for Vertex AI support. "
+            "Install it with: pip install gemini-batch[vertexai]"
+        )
+    
+    # Ensure bucket exists
+    bucket_name = gemini_client.ensure_gcs_bucket(bucket_name)
+    gcs = gemini_client.gcs_client
+    bucket = gcs.bucket(bucket_name)
+    
+    # Determine file content and MIME type
+    if isinstance(file, str):
+        file = Path(file)
+    
+    if isinstance(file, Path):
+        if not file.exists():
+            raise ValueError(f"File not found: {file}")
+        
+        mime_type, _ = mimetypes.guess_type(str(file))
+        mime_type = mime_type or "application/octet-stream"
+        
+        if destination_blob_name is None:
+            destination_blob_name = f"uploads/{uuid.uuid4()}_{file.name}"
+        
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_filename(str(file), content_type=mime_type)
+        logger.info(f"Uploaded {file} to gs://{bucket_name}/{destination_blob_name}")
+        
+    elif isinstance(file, Image.Image):
+        mime_type = "image/png"
+        
+        if destination_blob_name is None:
+            destination_blob_name = f"uploads/{uuid.uuid4()}.png"
+        
+        # Save image to bytes
+        img_buffer = io.BytesIO()
+        file.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+        
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_file(img_buffer, content_type=mime_type)
+        logger.info(f"Uploaded PIL Image to gs://{bucket_name}/{destination_blob_name}")
+        
+    elif isinstance(file, bytes):
+        # Try to detect if it's an image
+        mime_type = "application/octet-stream"
+        suffix = ".bin"
+        
+        # Simple magic byte detection for common image formats
+        if file[:8] == b'\x89PNG\r\n\x1a\n':
+            mime_type = "image/png"
+            suffix = ".png"
+        elif file[:2] == b'\xff\xd8':
+            mime_type = "image/jpeg"
+            suffix = ".jpg"
+        elif file[:6] in (b'GIF87a', b'GIF89a'):
+            mime_type = "image/gif"
+            suffix = ".gif"
+        
+        if destination_blob_name is None:
+            destination_blob_name = f"uploads/{uuid.uuid4()}{suffix}"
+        
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_string(file, content_type=mime_type)
+        logger.info(f"Uploaded bytes to gs://{bucket_name}/{destination_blob_name}")
+        
+    else:
+        raise ValueError(
+            f"Unsupported file type: {type(file)}. "
+            f"Supported types: str, pathlib.Path, PIL.Image.Image, bytes"
+        )
+    
+    return {
+        "uri": f"gs://{bucket_name}/{destination_blob_name}",
+        "mime_type": mime_type
+    }
+
+
+def download_from_gcs(
+    gemini_client: "GeminiClient",
+    gcs_uri: str,
+    destination_path: Optional[str] = None,
+) -> str:
+    """
+    Download a file from Google Cloud Storage.
+    
+    Args:
+        gemini_client: GeminiClient instance (must be in Vertex AI mode)
+        gcs_uri: GCS URI (gs://bucket/path/to/file)
+        destination_path: Local path to save file. Auto-generated if None.
+    
+    Returns:
+        Path to the downloaded file
+    
+    Raises:
+        RuntimeError: If client is not in Vertex AI mode
+        ValueError: If gcs_uri is invalid
+    """
+    if not gemini_client.vertexai:
+        raise RuntimeError("download_from_gcs requires Vertex AI mode")
+    
+    if not HAS_GCS:
+        raise ImportError(
+            "google-cloud-storage is required for Vertex AI support. "
+            "Install it with: pip install gemini-batch[vertexai]"
+        )
+    
+    # Parse GCS URI
+    if not gcs_uri.startswith("gs://"):
+        raise ValueError(f"Invalid GCS URI: {gcs_uri}. Must start with 'gs://'")
+    
+    parts = gcs_uri[5:].split("/", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid GCS URI: {gcs_uri}. Expected format: gs://bucket/path")
+    
+    bucket_name, blob_name = parts
+    
+    gcs = gemini_client.gcs_client
+    bucket = gcs.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    
+    if destination_path is None:
+        # Create temp file with appropriate extension
+        suffix = Path(blob_name).suffix or ".bin"
+        fd, destination_path = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+    
+    blob.download_to_filename(destination_path)
+    logger.info(f"Downloaded {gcs_uri} to {destination_path}")
+    
+    return destination_path
+
+
+def list_gcs_blobs(
+    gemini_client: "GeminiClient",
+    prefix: str,
+    bucket_name: Optional[str] = None,
+) -> List[str]:
+    """
+    List blobs in a GCS bucket with a given prefix.
+    
+    Args:
+        gemini_client: GeminiClient instance (must be in Vertex AI mode)
+        prefix: Prefix to filter blobs
+        bucket_name: GCS bucket name. Uses client's bucket if None.
+    
+    Returns:
+        List of gs:// URIs for matching blobs
+    """
+    if not gemini_client.vertexai:
+        raise RuntimeError("list_gcs_blobs requires Vertex AI mode")
+    
+    if not HAS_GCS:
+        raise ImportError(
+            "google-cloud-storage is required for Vertex AI support. "
+            "Install it with: pip install gemini-batch[vertexai]"
+        )
+    
+    bucket_name = bucket_name or gemini_client.get_gcs_bucket_name()
+    gcs = gemini_client.gcs_client
+    bucket = gcs.bucket(bucket_name)
+    
+    blobs = bucket.list_blobs(prefix=prefix)
+    return [f"gs://{bucket_name}/{blob.name}" for blob in blobs]
+
+
+def upload_file_for_batch(
+    file: Union[Path, Image.Image, bytes],
+    gemini_client: "GeminiClient",
+) -> Dict[str, str]:
+    """
+    Upload a file for batch processing, using appropriate storage based on backend.
+    
+    Routes to:
+    - GCS (gs:// URIs) for Vertex AI backend
+    - File API (files/ URIs) for Gemini Developer API backend
+    
+    Args:
+        file: File to upload - pathlib.Path, PIL.Image.Image, or bytes
+        gemini_client: GeminiClient instance
+    
+    Returns:
+        Dictionary with 'uri' and 'mime_type' keys
+    """
+    if gemini_client.vertexai:
+        return upload_to_gcs(gemini_client, file)
+    else:
+        return upload_file_to_gemini(file, gemini_client.client)
 
 
 def upload_file_to_gemini(

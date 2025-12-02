@@ -11,7 +11,17 @@ from google.genai import types
 from pydantic import BaseModel, ValidationError
 
 from . import config as app_config
-from .utils import GeminiClient, pdf_pages_to_images, build_generation_config, logger, extract_json_from_text
+from .utils import (
+    GeminiClient,
+    pdf_pages_to_images,
+    build_generation_config,
+    logger,
+    extract_json_from_text,
+    upload_to_gcs,
+    download_from_gcs,
+    list_gcs_blobs,
+    HAS_GCS,
+)
 
 
 def extract_timestamp_from_display_name(display_name: str) -> Optional[int]:
@@ -36,21 +46,30 @@ def create_batch_job(
     job_display_name: Optional[str] = None,
     generation_config: Optional[types.GenerateContentConfig] = None,
     jsonl_dir: Optional[str] = None,
+    client: Optional[GeminiClient] = None,
+    gcs_output_path: Optional[str] = None,
 ) -> str:
     """
     Create a batch job for processing requests using file-based mode.
+
+    Supports both Gemini Developer API (File API) and Vertex AI (GCS) backends.
+    The backend is determined by the client configuration.
 
     Args:
         requests: List of request dictionaries with 'key' and 'request' fields
         model_name: Gemini model to use
         job_display_name: Display name for the batch job
         generation_config: Configuration for generation
-        jsonl_dir: Directory to save JSONL file
+        jsonl_dir: Directory to save JSONL file (local, for both backends)
+        client: GeminiClient instance. If None, creates a new one (auto-detects backend).
+        gcs_output_path: GCS output path for results (Vertex AI only). If None, 
+                         auto-generated as gs://{bucket}/batch-results/{timestamp}/
 
     Returns:
         Batch job name for monitoring
     """
-    client = GeminiClient()
+    if client is None:
+        client = GeminiClient()
 
     # Apply generation config to all requests if provided
     if generation_config:
@@ -70,7 +89,7 @@ def create_batch_job(
 
     logger.info(f"Creating batch job '{job_display_name}' with {len(requests)} requests...")
 
-    # Create JSONL and upload
+    # Create JSONL file locally
     if jsonl_dir is None:
         jsonl_dir = app_config.BATCH_CONFIG["default_jsonl_dir"]
 
@@ -81,26 +100,54 @@ def create_batch_job(
         for req in requests:
             f.write(json.dumps(req) + "\n")
 
-    # Upload batch requests file
-    uploaded_file = client.client.files.upload(
-        file=jsonl_filename,
-        config=types.UploadFileConfig(
-            display_name=f"batch-requests-{int(time.time())}",
-            mime_type="application/json"
+    if client.vertexai:
+        # Vertex AI: Upload JSONL to GCS
+        bucket_name = client.ensure_gcs_bucket()
+        gcs_blob_name = f"batch-requests/{job_display_name}.jsonl"
+        
+        gcs_info = upload_to_gcs(
+            client,
+            Path(jsonl_filename),
+            destination_blob_name=gcs_blob_name,
+            bucket_name=bucket_name,
         )
-    )
+        gcs_input_uri = gcs_info["uri"]
+        logger.info(f"Uploaded batch requests to GCS: {gcs_input_uri}")
+        
+        # Set up GCS output path
+        if gcs_output_path is None:
+            gcs_output_path = f"gs://{bucket_name}/batch-results/{job_display_name}/"
+        
+        # Create batch job with GCS source and destination
+        batch_job = client.client.batches.create(
+            model=model_name,
+            src=gcs_input_uri,
+            config=types.CreateBatchJobConfig(
+                display_name=job_display_name,
+                dest=gcs_output_path,
+            )
+        )
+    else:
+        # Gemini Developer API: Upload to File API
+        uploaded_file = client.client.files.upload(
+            file=jsonl_filename,
+            config=types.UploadFileConfig(
+                display_name=f"batch-requests-{int(time.time())}",
+                mime_type="application/json"
+            )
+        )
 
-    if not uploaded_file.name:
-        raise ValueError("Failed to get name for uploaded batch requests file.")
+        if not uploaded_file.name:
+            raise ValueError("Failed to get name for uploaded batch requests file.")
 
-    logger.info(f"Uploaded batch requests file: {uploaded_file.name}")
+        logger.info(f"Uploaded batch requests file: {uploaded_file.name}")
 
-    # Create batch job with file
-    batch_job = client.client.batches.create(
-        model=model_name,
-        src=uploaded_file.name,
-        config=types.CreateBatchJobConfig(display_name=job_display_name)
-    )
+        # Create batch job with file
+        batch_job = client.client.batches.create(
+            model=model_name,
+            src=uploaded_file.name,
+            config=types.CreateBatchJobConfig(display_name=job_display_name)
+        )
 
     if not batch_job.name:
         raise ValueError("Failed to create batch job or get job name.")
@@ -109,18 +156,24 @@ def create_batch_job(
     return batch_job.name
 
 
-def monitor_batch_job(job_name: str, poll_interval: int = app_config.BATCH_CONFIG["poll_interval"]) -> str:
+def monitor_batch_job(
+    job_name: str,
+    poll_interval: int = app_config.BATCH_CONFIG["poll_interval"],
+    client: Optional[GeminiClient] = None,
+) -> str:
     """
     Monitor a batch job until completion.
 
     Args:
         job_name: Name of the batch job to monitor
         poll_interval: Seconds to wait between status checks
+        client: GeminiClient instance. If None, creates a new one (auto-detects backend).
 
     Returns:
         Final job state
     """
-    client = GeminiClient()
+    if client is None:
+        client = GeminiClient()
 
     logger.info(f"Monitoring batch job: {job_name}")
 
@@ -145,28 +198,37 @@ def monitor_batch_job(job_name: str, poll_interval: int = app_config.BATCH_CONFI
         time.sleep(poll_interval)
 
 
-def download_batch_results(batch_job_name: str, output_dir: Optional[str] = None, overwrite: bool = True) -> str:
+def download_batch_results(
+    batch_job_name: str,
+    output_dir: Optional[str] = None,
+    overwrite: bool = True,
+    client: Optional[GeminiClient] = None,
+) -> str:
     """
     Download batch results file from completed job.
+
+    Supports both Gemini Developer API (File API) and Vertex AI (GCS) backends.
+    The backend is auto-detected from the job's destination configuration.
 
     Args:
         batch_job_name: Name of the completed batch job
         output_dir: Directory to save the downloaded file (defaults to .gemini_batch/)
         overwrite: If True, overwrites existing file. If False, auto-increments filename.
+        client: GeminiClient instance. If None, creates a new one (auto-detects backend).
 
     Returns:
         Path to the downloaded file
     """
-    client = GeminiClient()
+    if client is None:
+        client = GeminiClient()
+    
     batch_job = client.client.batches.get(name=batch_job_name)
 
     if batch_job.state is None or batch_job.state.name is None:
         raise ValueError("Batch job state is missing or invalid.")
     if batch_job.state.name != 'JOB_STATE_SUCCEEDED':
         raise ValueError(f"Job not succeeded. Current state: {batch_job.state.name}")
-    if not batch_job.dest or not batch_job.dest.file_name:
-        raise ValueError("Batch job does not have an associated results file.")
-
+    
     # Use default output directory if not specified
     if output_dir is None:
         output_dir = app_config.BATCH_CONFIG["default_results_dir"]
@@ -183,9 +245,9 @@ def download_batch_results(batch_job_name: str, output_dir: Optional[str] = None
             # Fallback if display_name doesn't match expected pattern
             new_file_name = batch_job.display_name + ".jsonl"
     else:
-        new_file_name = batch_job.dest.file_name
+        new_file_name = "batch_results.jsonl"
 
-    output_path = Path(output_dir) / Path(new_file_name).name
+    output_path = Path(output_dir) / new_file_name
 
     # Auto-increment filename if it exists and overwrite is False
     if not overwrite and output_path.exists():
@@ -202,27 +264,68 @@ def download_batch_results(batch_job_name: str, output_dir: Optional[str] = None
                 break
             counter += 1
 
-    logger.info(f"Downloading batch results file {batch_job.dest.file_name} to {output_path}...")
-    file_content = client.client.files.download(file=batch_job.dest.file_name)
-    if not file_content:
-        raise ValueError("Failed to download batch results file or file is empty.")
-    with open(output_path, "wb") as f:
-        f.write(file_content)
-    logger.info(f"Downloaded batch results file to {output_path}")
-    return str(output_path)
+    # Check if results are from GCS (Vertex AI) or File API
+    if batch_job.dest:
+        # Check for GCS output (gcs_uri field)
+        gcs_uri = getattr(batch_job.dest, 'gcs_uri', None)
+        if gcs_uri:
+            # Vertex AI: Download from GCS
+            logger.info(f"Downloading batch results from GCS: {gcs_uri}")
+            
+            # List all files in the output directory and find the predictions file
+            result_blobs = list_gcs_blobs(client, prefix=gcs_uri.replace(f"gs://{client.gcs_bucket}/", ""))
+            
+            # Look for predictions.jsonl or similar
+            predictions_blob = None
+            for blob_uri in result_blobs:
+                if 'predictions' in blob_uri.lower() or blob_uri.endswith('.jsonl'):
+                    predictions_blob = blob_uri
+                    break
+            
+            if not predictions_blob:
+                # Try downloading directly if it's a file path
+                predictions_blob = gcs_uri if gcs_uri.endswith('.jsonl') else f"{gcs_uri.rstrip('/')}/predictions.jsonl"
+            
+            download_from_gcs(client, predictions_blob, str(output_path))
+            logger.info(f"Downloaded batch results to {output_path}")
+            return str(output_path)
+        
+        # Check for File API output (file_name field)
+        file_name = getattr(batch_job.dest, 'file_name', None)
+        if file_name:
+            # Gemini Developer API: Download from File API
+            logger.info(f"Downloading batch results file {file_name} to {output_path}...")
+            file_content = client.client.files.download(file=file_name)
+            if not file_content:
+                raise ValueError("Failed to download batch results file or file is empty.")
+            with open(output_path, "wb") as f:
+                f.write(file_content)
+            logger.info(f"Downloaded batch results file to {output_path}")
+            return str(output_path)
+    
+    raise ValueError("Batch job does not have an associated results file (no GCS URI or File API name).")
 
 
-def get_inline_results(batch_job_name: str) -> List[Dict]:
+def get_inline_results(
+    batch_job_name: str,
+    client: Optional[GeminiClient] = None,
+) -> List[Dict]:
     """
     Get inline results from a completed batch job.
 
+    Note: Inline results are typically only available with Gemini Developer API,
+    not with Vertex AI (which uses GCS for output).
+
     Args:
         batch_job_name: Name of the completed batch job
+        client: GeminiClient instance. If None, creates a new one (auto-detects backend).
 
     Returns:
         List of result dictionaries
     """
-    client = GeminiClient()
+    if client is None:
+        client = GeminiClient()
+    
     batch_job = client.client.batches.get(name=batch_job_name)
 
     if batch_job.state is None or batch_job.state.name is None:

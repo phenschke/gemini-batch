@@ -21,10 +21,10 @@ class TestSchema(BaseModel):
 
 
 @patch('gemini_batch.batch.GeminiClient')
-@patch('builtins.open', create=True)
-def test_create_batch_job_file(mock_open, mock_client_class, tmp_path):
+def test_create_batch_job_file(mock_client_class, tmp_path):
     """Test batch job creation with file-based mode."""
     mock_client = MagicMock()
+    mock_client.vertexai = False  # Explicitly set Developer API mode
     mock_batch_job = MagicMock()
     mock_batch_job.name = "batches/test-job-456"
     mock_uploaded_file = MagicMock()
@@ -90,6 +90,7 @@ def test_monitor_batch_job_failed(mock_sleep, mock_client_class):
 def test_download_batch_results(mock_client_class, tmp_path):
     """Test downloading batch results."""
     mock_client = MagicMock()
+    mock_client.vertexai = False  # Explicitly set Developer API mode
     mock_batch_job = MagicMock()
     mock_state = MagicMock()
     mock_state.name = 'JOB_STATE_SUCCEEDED'
@@ -97,6 +98,7 @@ def test_download_batch_results(mock_client_class, tmp_path):
     mock_batch_job.display_name = "test-results"
     mock_dest = MagicMock()
     mock_dest.file_name = "files/results-123"
+    mock_dest.gcs_uri = None  # No GCS URI for Developer API
     mock_batch_job.dest = mock_dest
     file_content = b'{"key": "test", "response": {"text": "result"}}'
     mock_client.client.files.download.return_value = file_content
@@ -960,11 +962,11 @@ def test_extract_timestamp_from_display_name():
 
 
 @patch('gemini_batch.batch.GeminiClient')
-@patch('builtins.open', create=True)
 @patch('time.time', return_value=1700000000)
-def test_timestamp_alignment_in_filenames(mock_time, mock_open, mock_client_class, tmp_path):
+def test_timestamp_alignment_in_filenames(mock_time, mock_client_class, tmp_path):
     """Test that request and result files use the same timestamp."""
     mock_client = MagicMock()
+    mock_client.vertexai = False  # Explicitly set Developer API mode
     mock_batch_job = MagicMock()
     mock_batch_job.name = "batches/test-job-456"
     mock_batch_job.display_name = "batch-1700000000"  # Display name with timestamp
@@ -991,6 +993,7 @@ def test_timestamp_alignment_in_filenames(mock_time, mock_open, mock_client_clas
     mock_batch_job.state = mock_state
     mock_dest = MagicMock()
     mock_dest.file_name = "files/results-123"
+    mock_dest.gcs_uri = None  # No GCS URI for Developer API
     mock_batch_job.dest = mock_dest
     file_content = b'{"key": "test", "response": {"text": "result"}}'
     mock_client.client.files.download.return_value = file_content
@@ -1007,6 +1010,7 @@ def test_timestamp_alignment_in_filenames(mock_time, mock_open, mock_client_clas
 def test_download_batch_results_with_timestamp_extraction(mock_client_class, tmp_path):
     """Test that download_batch_results extracts timestamp from display_name."""
     mock_client = MagicMock()
+    mock_client.vertexai = False  # Explicitly set Developer API mode
     mock_batch_job = MagicMock()
     mock_state = MagicMock()
     mock_state.name = 'JOB_STATE_SUCCEEDED'
@@ -1014,6 +1018,7 @@ def test_download_batch_results_with_timestamp_extraction(mock_client_class, tmp
     mock_batch_job.display_name = "batch-1234567890"  # Contains timestamp
     mock_dest = MagicMock()
     mock_dest.file_name = "files/results-123"
+    mock_dest.gcs_uri = None  # No GCS URI for Developer API
     mock_batch_job.dest = mock_dest
     file_content = b'{"key": "test", "response": {"text": "result"}}'
     mock_client.client.files.download.return_value = file_content
@@ -1031,6 +1036,7 @@ def test_download_batch_results_with_timestamp_extraction(mock_client_class, tmp
 def test_download_batch_results_fallback_for_custom_display_name(mock_client_class, tmp_path):
     """Test fallback behavior when display_name doesn't match pattern."""
     mock_client = MagicMock()
+    mock_client.vertexai = False  # Explicitly set Developer API mode
     mock_batch_job = MagicMock()
     mock_state = MagicMock()
     mock_state.name = 'JOB_STATE_SUCCEEDED'
@@ -1038,6 +1044,7 @@ def test_download_batch_results_fallback_for_custom_display_name(mock_client_cla
     mock_batch_job.display_name = "my-custom-job"  # No timestamp pattern
     mock_dest = MagicMock()
     mock_dest.file_name = "files/results-123"
+    mock_dest.gcs_uri = None  # No GCS URI for Developer API
     mock_batch_job.dest = mock_dest
     file_content = b'{"key": "test", "response": {"text": "result"}}'
     mock_client.client.files.download.return_value = file_content
