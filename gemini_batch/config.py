@@ -38,6 +38,31 @@ MEDIA_RESOLUTION_OPTIONS = {
     "HIGH": "MEDIA_RESOLUTION_HIGH",     # Higher token usage, more detail, increased latency/cost
 }
 
+# --- Async Processing Settings ---
+# Configuration for async_process() using OpenAI-compatible APIs
+# Environment variable fallback: OPENAI_API_KEY
+ASYNC_CONFIG = {
+    "default_model": "deepseek-chat",
+    "default_max_concurrent": 10,  # Maximum concurrent requests (rate limiting)
+    "default_timeout": 60.0,  # Request timeout in seconds
+    "default_retry_count": 3,  # Number of retries on failure
+    "default_retry_delay": 1.0,  # Initial delay between retries (exponential backoff)
+}
+
+# --- Embedding Settings ---
+# Configuration for batch embedding functionality
+EMBEDDING_CONFIG = {
+    "default_model": "gemini-embedding-001",
+    "default_task_type": "RETRIEVAL_DOCUMENT",
+    "valid_task_types": {
+        "RETRIEVAL_DOCUMENT",
+        "RETRIEVAL_QUERY",
+        "SEMANTIC_SIMILARITY",
+        "CLASSIFICATION",
+        "CLUSTERING",
+    },
+}
+
 # --- Vertex AI Settings ---
 # Configuration for Google Cloud Vertex AI backend (alternative to Gemini Developer API)
 # Environment variable fallbacks:

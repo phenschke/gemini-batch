@@ -63,6 +63,14 @@ results = batch_process(prompts, schema, n_samples=3)
 results = batch_process(prompts, schema, media_resolution="MEDIA_RESOLUTION_HIGH")
 ```
 
+**Batch embeddings:** Generate embeddings at 50% cost (Gemini Developer API only)
+```python
+from gemini_batch import batch_embed
+embeddings = batch_embed(["doc 1", "doc 2"], task_type="RETRIEVAL_DOCUMENT")
+# Returns: [[0.12, -0.45, ...], [0.78, ...]]  (3072-dim)
+```
+Task types: `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING`
+
 **Token statistics:** Analyze token usage across batches
 ```python
 from gemini_batch import calculate_token_statistics

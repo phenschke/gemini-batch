@@ -11,7 +11,7 @@ Supports both:
 For Vertex AI, install with: pip install gemini-batch[vertexai]
 """
 
-from typing import Union, Optional, List, Type, Dict, Any
+from typing import Union, Optional, List, Type, Dict, Any, get_origin, get_args
 from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
@@ -35,12 +35,36 @@ from .utils import (
     upload_to_gcs,
     download_from_gcs,
     list_gcs_blobs,
+    is_list_schema,
+    create_list_wrapper,
 )
 from .types import ListVoteConfig, MajorityVoteResult, TokenStatistics
+from .embedding import (
+    batch_embed,
+    create_embedding_batch_job,
+    download_embedding_results,
+    parse_embedding_results,
+)
 
-__version__ = "0.5.0"
+# Optional async processing (requires openai package)
+try:
+    from .async_batch import async_process, process
+except ImportError:
+    async_process = None
+    process = None
+
+__version__ = "0.6.0"
 __all__ = [
     "batch_process",
+    # Batch embeddings
+    "batch_embed",
+    "create_embedding_batch_job",
+    "download_embedding_results",
+    "parse_embedding_results",
+    # Async processing (OpenAI-compatible APIs)
+    "async_process",
+    "process",
+    # Low-level batch API
     "create_batch_job",
     "monitor_batch_job",
     "download_batch_results",
@@ -216,9 +240,18 @@ def batch_process(
             }
             requests.append(request)
 
+    # Handle List[T] schema types by wrapping in a model
+    # (Google GenAI SDK doesn't support List[T] as top-level schema)
+    _list_item_type = None
+    _effective_schema = schema
+    if schema is not None and is_list_schema(schema):
+        args = get_args(schema)
+        _list_item_type = args[0]
+        _effective_schema = create_list_wrapper(_list_item_type)
+
     # Build generation config
     gen_config = utils.build_generation_config(
-        response_schema=schema,
+        response_schema=_effective_schema,
         media_resolution=media_resolution,
         **generation_kwargs
     )
@@ -244,7 +277,16 @@ def batch_process(
 
     # Get results (always file-based)
     results_file = download_batch_results(job_name, output_dir, client=gemini_client)
-    parsed = parse_batch_results(results_file, schema, return_metadata=return_metadata)
+    parsed = parse_batch_results(results_file, _effective_schema, return_metadata=return_metadata)
+
+    # Unwrap List[T] results if we wrapped the schema
+    if _list_item_type is not None:
+        if return_metadata:
+            results, metadata = parsed
+            results = [r.items if r is not None else None for r in results]
+            parsed = (results, metadata)
+        else:
+            parsed = [r.items if r is not None else None for r in parsed]
 
     # Handle n_samples > 1: group results by prompt and aggregate
     if n_samples > 1:

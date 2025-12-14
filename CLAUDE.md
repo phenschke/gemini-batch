@@ -11,10 +11,18 @@
 ### Core API
 
 ```python
-# High-level (recommended)
+# Gemini Batch API (50% cost savings, slower)
 results = batch_process(prompts, schema, wait=True)
 
-# Low-level (advanced control)
+# Batch Embeddings (50% cost savings)
+embeddings = batch_embed(texts, task_type="RETRIEVAL_DOCUMENT")
+
+# OpenAI-compatible APIs (DeepSeek, Together, Groq, etc.)
+results = await async_process(prompts, schema, model="deepseek-chat", base_url="https://api.deepseek.com")
+# Or sync wrapper:
+results = process(prompts, schema, model="deepseek-chat", base_url="https://api.deepseek.com")
+
+# Low-level batch control
 job_name = create_batch_job(requests)
 monitor_batch_job(job_name)
 results_file = download_batch_results(job_name)
@@ -24,9 +32,11 @@ parsed = parse_batch_results(results_file, schema)
 ### Modules
 
 - **`batch.py`**: Job creation, monitoring, result download/parsing
+- **`embedding.py`**: Batch embedding generation with task type support
+- **`async_batch.py`**: Async processing for OpenAI-compatible APIs (install with `pip install gemini-batch[async]`)
 - **`utils.py`**: `GeminiClient`, file upload, PDF conversion, config building, JSON extraction
 - **`aggregation.py`**: Majority voting for `n_samples > 1`
-- **`config.py`**: Model, batch, image processing, media resolution defaults
+- **`config.py`**: Model, batch, image processing, media resolution, embedding, async defaults
 
 ## Implementation Details
 
@@ -58,6 +68,62 @@ File-based batch processing for all requests:
 - Results → JSONL file download
 - Files: `batch_{timestamp}_requests.jsonl` / `_results.jsonl` in `.gemini_batch/` (gitignored, not auto-cleaned)
 
+### Batch Embeddings
+
+Generate embeddings at 50% cost via Gemini Batch API:
+
+```python
+from gemini_batch import batch_embed
+
+# Basic usage
+embeddings = batch_embed(
+    texts=["Document 1 content...", "Document 2 content..."],
+    task_type="RETRIEVAL_DOCUMENT",  # or RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, etc.
+)
+# Returns: [[0.123, -0.456, ...], [0.789, -0.012, ...]]  (3072-dim vectors)
+```
+
+**Task Types:**
+- `RETRIEVAL_DOCUMENT`: For documents to be retrieved/indexed
+- `RETRIEVAL_QUERY`: For search queries
+- `SEMANTIC_SIMILARITY`: For similarity comparisons
+- `CLASSIFICATION`: For text classification
+- `CLUSTERING`: For clustering tasks
+
+**Key Implementation Details:**
+- Uses `client.batches.create_embeddings()` (different from text generation's `create()`)
+- JSONL format: `{"key": "0", "request": {"content": {"parts": [{"text": "..."}]}, "task_type": "..."}}`
+- Result parsing extracts `response["embedding"]["values"]`
+- Model: `gemini-embedding-001` (default), produces 3072-dimensional vectors
+
+### Async Processing (OpenAI-compatible APIs)
+
+For providers without batch APIs (DeepSeek, Together, Groq, OpenRouter, etc.):
+
+```python
+# Async
+results = await async_process(
+    prompts=[["What is 2+2?"]],
+    schema=Answer,
+    model="deepseek-chat",
+    base_url="https://api.deepseek.com",
+    api_key="...",  # or OPENAI_API_KEY env var
+    max_concurrent=10,  # rate limiting
+)
+
+# Sync wrapper
+results = process(prompts, schema, model="deepseek-chat", ...)
+```
+
+**Key differences from batch_process:**
+- Uses `openai` SDK's `AsyncOpenAI` (true asyncio)
+- Images encoded as base64 data URLs (not file URIs)
+- Rate limiting via `asyncio.Semaphore(max_concurrent)`
+- Structured output via JSON mode + Pydantic parsing (not all providers support json_schema)
+- Retry with exponential backoff (`retry_count`, `retry_delay`)
+
+**Install:** `pip install gemini-batch[async]` or `pip install gemini-batch[openai]`
+
 ### Structured Output & Parsing
 
 - Pydantic schemas passed to `build_generation_config()` via `response_schema`
@@ -86,16 +152,19 @@ Run: `.venv/bin/python -m pytest -m "not integration"`
 Coverage:
 - **`test_utils.py`**: File upload, PDF conversion, config, API client, JSON extraction
 - **`test_batch.py`**: Job creation, monitoring, result parsing (including robust parsing: markdown, malformed JSONL, validation errors)
+- **`test_embedding.py`**: Embedding batch job creation, result parsing, task type validation
+- **`test_async_batch.py`**: Async processing, media encoding, OpenAI message building, retry logic
 - **`test_aggregation.py`**: Majority voting
 
 ### Integration Tests (Live API, Essential)
 
 Run: `.venv/bin/python -m pytest -m integration -v -s` (requires `GEMINI_API_KEY`)
 
-**Three core workflows** (2 inputs each, < $0.01/run):
+**Core workflows** (2 inputs each, < $0.01/run):
 1. Text → Simple structured output
 2. Text → Rich structured output
 3. Text + Image → Structured output (multimodal)
+4. Text → Embeddings (with task types)
 
 **Why essential**: Verifies library works with real Gemini Batch API quirks.
 

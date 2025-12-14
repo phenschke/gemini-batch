@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from PIL import Image, ImageDraw
 import io
 
-from gemini_batch import batch_process
+from gemini_batch import batch_process, batch_embed
 
 # Mark all tests as integration tests
 pytestmark = pytest.mark.integration
@@ -292,6 +292,86 @@ def test_thinking_metadata_access():
         assert usage_no_thinking.thoughts_token_count < 10 or usage_no_thinking.thoughts_token_count is None, \
             "With thinking_budget=0, thoughts_token_count should be close to 0 or None"
         print("\n✓ Confirmed: thinking_budget=0 results in no thinking tokens")
+
+
+# Test 6: Batch embeddings
+def test_batch_embed_basic():
+    """Test basic batch embedding generation."""
+    texts = [
+        "The quick brown fox jumps over the lazy dog.",
+        "Machine learning is transforming industries.",
+    ]
+
+    embeddings = batch_embed(texts=texts, wait=True)
+
+    assert len(embeddings) == 2
+    assert all(isinstance(e, list) for e in embeddings)
+    assert all(len(e) > 0 for e in embeddings)  # Embeddings have values
+    assert all(isinstance(v, float) for e in embeddings for v in e)  # Values are floats
+
+    # Check embedding dimensions are consistent
+    assert len(embeddings[0]) == len(embeddings[1])
+
+    print(f"\n✓ Batch Embeddings: Got embeddings with dimension {len(embeddings[0])}")
+
+
+def test_batch_embed_with_task_types():
+    """Test batch embeddings with different task types."""
+    texts = ["Search query about Python programming"]
+
+    # Test RETRIEVAL_QUERY (for search queries)
+    query_embeddings = batch_embed(
+        texts=texts,
+        task_type="RETRIEVAL_QUERY",
+        wait=True,
+    )
+    assert len(query_embeddings) == 1
+    assert len(query_embeddings[0]) > 0
+
+    # Test RETRIEVAL_DOCUMENT (for documents)
+    doc_embeddings = batch_embed(
+        texts=texts,
+        task_type="RETRIEVAL_DOCUMENT",
+        wait=True,
+    )
+    assert len(doc_embeddings) == 1
+    assert len(doc_embeddings[0]) > 0
+
+    # Embeddings should have same dimension but different values
+    assert len(query_embeddings[0]) == len(doc_embeddings[0])
+    assert query_embeddings[0] != doc_embeddings[0]  # Different task types produce different embeddings
+
+    print(f"\n✓ Task Types: RETRIEVAL_QUERY and RETRIEVAL_DOCUMENT produce different embeddings")
+
+
+def test_batch_embed_with_metadata():
+    """Test batch embeddings with metadata return."""
+    texts = ["Test embedding for metadata"]
+
+    embeddings, metadata = batch_embed(
+        texts=texts,
+        return_metadata=True,
+    )
+
+    assert len(embeddings) == 1
+    assert len(metadata) == 1
+    assert embeddings[0] is not None
+    assert len(embeddings[0]) > 0
+
+    print(f"\n✓ Metadata: Embedding dimension {len(embeddings[0])}, metadata: {metadata[0]}")
+
+
+def test_batch_embed_vertexai_not_supported():
+    """Test that batch embeddings raise clear error for Vertex AI."""
+    texts = ["Test text"]
+
+    with pytest.raises(ValueError, match="not supported with Vertex AI"):
+        batch_embed(
+            texts=texts,
+            vertexai=True,
+        )
+
+    print("\n✓ Vertex AI Embeddings: Correctly raises error (not supported)")
 
 
 if __name__ == "__main__":

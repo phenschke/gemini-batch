@@ -675,3 +675,73 @@ def test_calculate_token_statistics_verbose_no_successful(capsys):
     assert stats.total_requests == 2
     assert stats.successful_requests == 0
     assert stats.avg_total_tokens is None
+
+
+# Tests for List[T] schema handling
+from typing import List
+from gemini_batch.utils import is_list_schema, create_list_wrapper
+
+
+class ItemModel(BaseModel):
+    id: int
+    name: str
+
+
+def test_is_list_schema_with_list_basemodel():
+    """Test is_list_schema returns True for List[BaseModel]."""
+    assert is_list_schema(List[ItemModel]) is True
+
+
+def test_is_list_schema_with_basemodel():
+    """Test is_list_schema returns False for plain BaseModel."""
+    assert is_list_schema(ItemModel) is False
+
+
+def test_is_list_schema_with_list_str():
+    """Test is_list_schema returns False for List[str] (non-BaseModel)."""
+    assert is_list_schema(List[str]) is False
+
+
+def test_is_list_schema_with_none():
+    """Test is_list_schema returns False for None."""
+    assert is_list_schema(None) is False
+
+
+def test_is_list_schema_with_list_int():
+    """Test is_list_schema returns False for List[int]."""
+    assert is_list_schema(List[int]) is False
+
+
+def test_create_list_wrapper_creates_valid_model():
+    """Test create_list_wrapper creates a valid Pydantic model."""
+    WrapperModel = create_list_wrapper(ItemModel)
+
+    # Check it's a valid BaseModel subclass
+    assert issubclass(WrapperModel, BaseModel)
+
+    # Check it has an 'items' field
+    assert 'items' in WrapperModel.model_fields
+
+
+def test_create_list_wrapper_parses_json():
+    """Test wrapper model can parse JSON with items list."""
+    WrapperModel = create_list_wrapper(ItemModel)
+
+    data = {"items": [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}]}
+    result = WrapperModel.model_validate(data)
+
+    assert len(result.items) == 2
+    assert result.items[0].id == 1
+    assert result.items[0].name == "first"
+    assert result.items[1].id == 2
+    assert result.items[1].name == "second"
+
+
+def test_create_list_wrapper_items_are_correct_type():
+    """Test wrapper model items are instances of the item type."""
+    WrapperModel = create_list_wrapper(ItemModel)
+
+    data = {"items": [{"id": 1, "name": "test"}]}
+    result = WrapperModel.model_validate(data)
+
+    assert isinstance(result.items[0], ItemModel)

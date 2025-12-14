@@ -8,7 +8,7 @@ import re
 import mimetypes
 import tempfile
 import uuid
-from typing import Union, Optional, List, Type, Dict, Any, Tuple
+from typing import Union, Optional, List, Type, Dict, Any, Tuple, get_origin, get_args
 from pathlib import Path
 from pydantic import BaseModel
 from PIL import Image
@@ -45,6 +45,44 @@ def setup_logging(level: int = logging.INFO, format_string: str = "[%(asctime)s]
     return logging.getLogger("gemini_batch")
 
 logger = setup_logging()
+
+
+def is_list_schema(schema: Any) -> bool:
+    """
+    Check if schema is a List[BaseModel] type.
+
+    Args:
+        schema: The schema to check (could be a type, generic alias, or None)
+
+    Returns:
+        True if schema is List[SomeBaseModel], False otherwise
+    """
+    if schema is None:
+        return False
+    origin = get_origin(schema)
+    if origin is list:
+        args = get_args(schema)
+        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            return True
+    return False
+
+
+def create_list_wrapper(item_type: Type[BaseModel]) -> Type[BaseModel]:
+    """
+    Create a wrapper Pydantic model for a list of items.
+
+    The Google GenAI SDK doesn't support List[T] as a top-level schema,
+    so we wrap it in a model with an 'items' field.
+
+    Args:
+        item_type: The Pydantic BaseModel class for list items
+
+    Returns:
+        A new Pydantic model class with an 'items: List[item_type]' field
+    """
+    from pydantic import create_model
+    return create_model('ListWrapper', items=(List[item_type], ...))
+
 
 # API key configuration
 def get_api_key() -> str:
