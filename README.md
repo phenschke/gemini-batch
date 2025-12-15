@@ -69,6 +69,13 @@ from gemini_batch import batch_embed
 embeddings = batch_embed(["doc 1", "doc 2"], task_type="RETRIEVAL_DOCUMENT")
 # Returns: [[0.12, -0.45, ...], [0.78, ...]]  (3072-dim)
 ```
+
+**Direct API embeddings:** Immediate results at full cost (when speed matters)
+```python
+from gemini_batch import embed
+embeddings = embed(["text 1", "text 2"], task_type="RETRIEVAL_QUERY")
+# Returns immediately (no batch job), 3072-dim vectors
+```
 Task types: `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING`
 
 **Token statistics:** Analyze token usage across batches

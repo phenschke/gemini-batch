@@ -2,8 +2,10 @@
 Batch embedding functionality for gemini-batch library.
 
 Provides batch embedding generation using the Gemini Batch API for 50% cost savings.
+Also provides direct API embedding support for immediate results.
 """
 
+import asyncio
 import json
 import time
 from typing import Union, Optional, List, Dict, Any, Tuple
@@ -325,6 +327,222 @@ def parse_embedding_results(
     if return_metadata:
         return embeddings, metadata_list
     return embeddings
+
+
+async def async_embed(
+    texts: List[str],
+    model: str = app_config.EMBEDDING_CONFIG["default_model"],
+    task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    output_dimensionality: Optional[int] = None,
+    title: Optional[str] = None,
+    return_metadata: bool = False,
+    max_concurrent: int = 10,
+    batch_size: int = 250,  # API limit is 250 texts per request
+    # Vertex AI parameters
+    vertexai: Optional[bool] = None,
+    project: Optional[str] = None,
+    location: Optional[str] = None,
+) -> Union[List[List[float]], Tuple[List[List[float]], List[Dict[str, Any]]]]:
+    """
+    Generate embeddings using direct API (no batch job, immediate results).
+
+    Uses the Gemini direct embedding API which returns results immediately at full cost
+    (not batch API's 50% discount). Useful when you need results quickly or have a small
+    number of texts.
+
+    Processes texts in batches of up to 250 (API limit) with optional concurrency control.
+
+    Args:
+        texts: List of text strings to embed
+        model: Gemini embedding model to use (default: gemini-embedding-001)
+        task_type: Embedding task type. Valid values:
+            - "RETRIEVAL_DOCUMENT": For documents to be retrieved
+            - "RETRIEVAL_QUERY": For search queries
+            - "SEMANTIC_SIMILARITY": For similarity comparisons
+            - "CLASSIFICATION": For text classification
+            - "CLUSTERING": For clustering tasks
+        output_dimensionality: Optional reduced embedding dimension (e.g., 768)
+        title: Optional title describing the content
+        return_metadata: If True, returns tuple of (embeddings, metadata_list)
+        max_concurrent: Maximum concurrent API requests
+        batch_size: Max texts per API request (default 250, API maximum)
+        vertexai: If True, use Vertex AI backend. If None, auto-detect from env.
+        project: GCP project ID (Vertex AI only)
+        location: GCP region (Vertex AI only)
+
+    Returns:
+        If return_metadata=False:
+            List of embedding vectors (List[List[float]])
+        If return_metadata=True:
+            Tuple of (embeddings, metadata_list)
+
+    Examples:
+        >>> # Basic usage
+        >>> embeddings = await async_embed(["Text 1", "Text 2"])
+        >>>
+        >>> # With task type
+        >>> query_emb = await async_embed(
+        ...     ["search query"],
+        ...     task_type="RETRIEVAL_QUERY"
+        ... )
+        >>>
+        >>> # Reduced dimensions for efficiency
+        >>> embeddings = await async_embed(
+        ...     texts=["Text"],
+        ...     output_dimensionality=768
+        ... )
+    """
+    # Validate task_type
+    valid_task_types = app_config.EMBEDDING_CONFIG["valid_task_types"]
+    if task_type not in valid_task_types:
+        raise ValueError(
+            f"Invalid task_type '{task_type}'. Must be one of: {valid_task_types}"
+        )
+
+    # Initialize client (single client for all batches - async is thread-safe)
+    client = GeminiClient(
+        vertexai=vertexai,
+        project=project,
+        location=location,
+    )
+
+    # Build config
+    config_kwargs = {"task_type": task_type}
+    if output_dimensionality is not None:
+        config_kwargs["output_dimensionality"] = output_dimensionality
+    if title is not None:
+        config_kwargs["title"] = title
+
+    embed_config = types.EmbedContentConfig(**config_kwargs)
+
+    # Split texts into batches (API limit: 250 texts per request)
+    text_batches = [texts[i:i + batch_size] for i in range(0, len(texts), batch_size)]
+
+    # Semaphore for rate limiting
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def process_batch(batch: List[str]) -> Tuple[List[List[float]], List[Dict]]:
+        """Process a single batch of texts."""
+        async with semaphore:
+            # Use native async API via client.aio
+            response = await client.client.aio.models.embed_content(
+                model=model,
+                contents=batch,  # Just pass list of strings
+                config=embed_config,
+            )
+
+            # Extract embeddings and metadata
+            batch_embeddings = []
+            batch_metadata = []
+
+            if hasattr(response, 'embeddings') and response.embeddings is not None:
+                # Response object format
+                for emb in response.embeddings:
+                    if hasattr(emb, 'values') and emb.values is not None:
+                        batch_embeddings.append(list(emb.values))
+                    else:
+                        # Fallback if values is not an attribute or is None
+                        batch_embeddings.append([])
+
+                    if return_metadata:
+                        meta: Dict[str, Any] = {}
+                        if hasattr(emb, 'statistics') and emb.statistics is not None:
+                            meta['statistics'] = {
+                                'token_count': getattr(emb.statistics, 'token_count', None),
+                                'truncated': getattr(emb.statistics, 'truncated', None),
+                            }
+                        batch_metadata.append(meta)
+            elif isinstance(response, dict) and 'embeddings' in response:
+                # Dict format (fallback)
+                for emb in response['embeddings']:
+                    batch_embeddings.append(emb.get('values', []))
+
+                    if return_metadata:
+                        meta_dict: Dict[str, Any] = {}
+                        if 'statistics' in emb:
+                            meta_dict['statistics'] = emb['statistics']
+                        batch_metadata.append(meta_dict)
+            else:
+                logger.error("Unexpected response format from embed_content API")
+
+            return batch_embeddings, batch_metadata
+
+    # Process all batches concurrently
+    tasks = [process_batch(batch) for batch in text_batches]
+    results = await asyncio.gather(*tasks)
+
+    # Flatten results
+    all_embeddings = []
+    all_metadata = []
+
+    for batch_emb, batch_meta in results:
+        all_embeddings.extend(batch_emb)
+        if return_metadata:
+            all_metadata.extend(batch_meta)
+
+    logger.info(f"Generated {len(all_embeddings)} embeddings via direct API")
+
+    if return_metadata:
+        return all_embeddings, all_metadata
+    return all_embeddings
+
+
+def embed(
+    texts: List[str],
+    model: str = app_config.EMBEDDING_CONFIG["default_model"],
+    task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    output_dimensionality: Optional[int] = None,
+    title: Optional[str] = None,
+    return_metadata: bool = False,
+    max_concurrent: int = 10,
+    batch_size: int = 250,
+    # Vertex AI parameters
+    vertexai: Optional[bool] = None,
+    project: Optional[str] = None,
+    location: Optional[str] = None,
+) -> Union[List[List[float]], Tuple[List[List[float]], List[Dict[str, Any]]]]:
+    """
+    Synchronous wrapper for async_embed().
+
+    Generate embeddings using direct API (no batch job, immediate results).
+
+    Uses the Gemini direct embedding API which returns results immediately at full cost
+    (not batch API's 50% discount). Useful when you need results quickly or have a small
+    number of texts.
+
+    See async_embed() for full documentation.
+
+    Examples:
+        >>> from gemini_batch import embed
+        >>>
+        >>> # Basic usage
+        >>> embeddings = embed(["Text 1", "Text 2"])
+        >>>
+        >>> # With task type
+        >>> query_emb = embed(
+        ...     ["search query"],
+        ...     task_type="RETRIEVAL_QUERY"
+        ... )
+        >>>
+        >>> # With metadata
+        >>> embeddings, metadata = embed(
+        ...     ["Text"],
+        ...     return_metadata=True
+        ... )
+    """
+    return asyncio.run(async_embed(
+        texts=texts,
+        model=model,
+        task_type=task_type,
+        output_dimensionality=output_dimensionality,
+        title=title,
+        return_metadata=return_metadata,
+        max_concurrent=max_concurrent,
+        batch_size=batch_size,
+        vertexai=vertexai,
+        project=project,
+        location=location,
+    ))
 
 
 def batch_embed(

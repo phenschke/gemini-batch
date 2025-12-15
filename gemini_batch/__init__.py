@@ -41,6 +41,8 @@ from .utils import (
 from .types import ListVoteConfig, MajorityVoteResult, TokenStatistics
 from .embedding import (
     batch_embed,
+    embed,
+    async_embed,
     create_embedding_batch_job,
     download_embedding_results,
     parse_embedding_results,
@@ -58,6 +60,10 @@ __all__ = [
     "batch_process",
     # Batch embeddings
     "batch_embed",
+    # Direct API embeddings
+    "embed",
+    "async_embed",
+    # Low-level embedding API
     "create_embedding_batch_job",
     "download_embedding_results",
     "parse_embedding_results",
