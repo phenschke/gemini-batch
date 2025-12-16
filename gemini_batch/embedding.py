@@ -11,6 +11,7 @@ import time
 from typing import Union, Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from google.genai import types
+from tqdm.asyncio import tqdm as async_tqdm
 
 from . import config as app_config
 from .utils import (
@@ -338,6 +339,7 @@ async def async_embed(
     return_metadata: bool = False,
     max_concurrent: int = 10,
     batch_size: int = 250,  # API limit is 250 texts per request
+    show_progress: bool = True,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -366,6 +368,7 @@ async def async_embed(
         return_metadata: If True, returns tuple of (embeddings, metadata_list)
         max_concurrent: Maximum concurrent API requests
         batch_size: Max texts per API request (default 250, API maximum)
+        show_progress: If True, display progress bar (default: True)
         vertexai: If True, use Vertex AI backend. If None, auto-detect from env.
         project: GCP project ID (Vertex AI only)
         location: GCP region (Vertex AI only)
@@ -467,9 +470,19 @@ async def async_embed(
 
             return batch_embeddings, batch_metadata
 
-    # Process all batches concurrently
-    tasks = [process_batch(batch) for batch in text_batches]
-    results = await asyncio.gather(*tasks)
+    # Process all batches concurrently with progress tracking
+    if show_progress:
+        # Create tasks wrapped with progress bar
+        tasks = [process_batch(batch) for batch in text_batches]
+        results = await async_tqdm.gather(
+            *tasks,
+            desc="Embedding batches",
+            total=len(text_batches),
+            unit="batch"
+        )
+    else:
+        tasks = [process_batch(batch) for batch in text_batches]
+        results = await asyncio.gather(*tasks)
 
     # Flatten results
     all_embeddings = []
@@ -496,6 +509,7 @@ def embed(
     return_metadata: bool = False,
     max_concurrent: int = 10,
     batch_size: int = 250,
+    show_progress: bool = True,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -539,6 +553,7 @@ def embed(
         return_metadata=return_metadata,
         max_concurrent=max_concurrent,
         batch_size=batch_size,
+        show_progress=show_progress,
         vertexai=vertexai,
         project=project,
         location=location,
