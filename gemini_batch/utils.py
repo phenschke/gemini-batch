@@ -279,9 +279,10 @@ class GeminiClient:
                     vertexai=True,
                     project=self.project,
                     location=self.location,
+                    http_options={'api_version': 'v1alpha'}
                 )
             else:
-                self._client = genai.Client(api_key=self.api_key)
+                self._client = genai.Client(api_key=self.api_key, http_options={'api_version': 'v1alpha'})
         return self._client
     
     @property
