@@ -1056,3 +1056,106 @@ def test_download_batch_results_fallback_for_custom_display_name(mock_client_cla
     # Should fall back to display_name + .jsonl
     assert "my-custom-job.jsonl" in result_path
     assert Path(result_path).exists()
+
+
+@patch('gemini_batch.utils.GeminiClient')
+def test_batch_process_part_media_resolution_format(mock_client_class, tmp_path):
+    """Test that part_media_resolution is correctly formatted as object with level key.
+
+    Per Google's docs, media_resolution on a part should be:
+    {"media_resolution": {"level": "MEDIA_RESOLUTION_ULTRA_HIGH"}}
+    Not just a string.
+    """
+    from gemini_batch import batch_process
+
+    mock_client = MagicMock()
+    mock_client.vertexai = False
+
+    # Mock file upload
+    mock_uploaded_file = MagicMock()
+    mock_uploaded_file.uri = "https://generativelanguage.googleapis.com/v1/files/uploaded-123"
+    mock_uploaded_file.mime_type = "image/png"
+    mock_client.client.files.upload.return_value = mock_uploaded_file
+
+    # Mock batch creation - capture the JSONL file content
+    captured_jsonl_content = []
+    mock_batch_job = MagicMock()
+    mock_batch_job.name = "batches/test-job-789"
+
+    def capture_batch_create(**kwargs):
+        # Read the uploaded JSONL file to capture content
+        if 'src' in kwargs:
+            src = kwargs['src']
+            if hasattr(src, 'uploaded_file') and hasattr(src.uploaded_file, 'file'):
+                # Handle types.UploadedFileSource
+                pass
+        return mock_batch_job
+
+    mock_client.client.batches.create.side_effect = capture_batch_create
+    mock_client.client.batches.create.return_value = mock_batch_job
+
+    mock_client_class.return_value = mock_client
+
+    # Create a test image file
+    test_image = tmp_path / "test.png"
+    # Create a minimal valid PNG file
+    import struct
+    import zlib
+    def create_minimal_png():
+        # PNG signature
+        signature = b'\x89PNG\r\n\x1a\n'
+        # IHDR chunk (1x1 pixel, 8-bit grayscale)
+        width = 1
+        height = 1
+        ihdr_data = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b'IHDR' + ihdr_data) & 0xffffffff
+        ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data + struct.pack('>I', ihdr_crc)
+        # IDAT chunk (compressed scanline with filter byte 0 and one gray pixel)
+        raw_data = b'\x00\x00'  # filter=0, gray=0
+        compressed = zlib.compress(raw_data)
+        idat_crc = zlib.crc32(b'IDAT' + compressed) & 0xffffffff
+        idat = struct.pack('>I', len(compressed)) + b'IDAT' + compressed + struct.pack('>I', idat_crc)
+        # IEND chunk
+        iend_crc = zlib.crc32(b'IEND') & 0xffffffff
+        iend = struct.pack('>I', 0) + b'IEND' + struct.pack('>I', iend_crc)
+        return signature + ihdr + idat + iend
+
+    test_image.write_bytes(create_minimal_png())
+
+    # Use wait=False to avoid monitoring
+    try:
+        batch_process(
+            prompts=[["Describe this image:", test_image]],
+            schema=TestSchema,
+            wait=False,
+            part_media_resolution="MEDIA_RESOLUTION_ULTRA_HIGH",
+            jsonl_dir=str(tmp_path),
+        )
+    except Exception:
+        pass  # We just want to verify the file upload call
+
+    # Find the JSONL file that was created
+    jsonl_files = list(tmp_path.glob("*.jsonl"))
+    assert len(jsonl_files) > 0, "No JSONL file was created"
+
+    # Read and parse the JSONL content
+    jsonl_content = jsonl_files[0].read_text()
+    request_data = json.loads(jsonl_content.strip())
+
+    # Verify the file part has media_resolution in the correct format
+    parts = request_data["request"]["contents"][0]["parts"]
+    file_part = None
+    for part in parts:
+        if "file_data" in part:
+            file_part = part
+            break
+
+    assert file_part is not None, "No file_data part found in request"
+    assert "media_resolution" in file_part, "media_resolution not found in file part"
+
+    # THE KEY ASSERTION: media_resolution should be an object with "level" key
+    # NOT just a string
+    media_res = file_part["media_resolution"]
+    assert isinstance(media_res, dict), f"media_resolution should be a dict, got {type(media_res)}"
+    assert "level" in media_res, f"media_resolution should have 'level' key, got {media_res}"
+    assert media_res["level"] == "MEDIA_RESOLUTION_ULTRA_HIGH", f"Expected MEDIA_RESOLUTION_ULTRA_HIGH, got {media_res['level']}"

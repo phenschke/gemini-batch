@@ -242,7 +242,7 @@ def batch_process(
                     }
                     # Add part-level media resolution if specified (experimental, v1alpha API)
                     if part_media_resolution is not None:
-                        file_part["media_resolution"] = part_media_resolution
+                        file_part["media_resolution"] = {"level": part_media_resolution}
                     content_parts.append(file_part)
                 else:
                     raise ValueError(
