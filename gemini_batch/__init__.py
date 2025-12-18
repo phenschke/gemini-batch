@@ -102,6 +102,7 @@ def batch_process(
     jsonl_dir: Optional[str] = None,
     return_metadata: bool = False,
     media_resolution: Optional[str] = None,
+    part_media_resolution: Optional[str] = None,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -136,11 +137,18 @@ def batch_process(
         output_dir: Directory to save results (defaults to .gemini_batch/)
         jsonl_dir: Directory to save JSONL request files (defaults to .gemini_batch/)
         return_metadata: If True, returns tuple of (results, metadata_list) with usage stats
-        media_resolution: Optional media resolution for image/video inputs. Valid values:
+        media_resolution: Optional media resolution for image/video inputs (generation config level). Valid values:
             - "MEDIA_RESOLUTION_LOW": Lower token usage, faster/cheaper, less detail
             - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed
             - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost
             Controls quality vs cost tradeoff for media processing.
+        part_media_resolution: Optional media resolution set on each file/image part (experimental,
+            requires v1alpha API). Valid values:
+            - "MEDIA_RESOLUTION_LOW": Lower token usage, faster/cheaper, less detail
+            - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed
+            - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost
+            - "MEDIA_RESOLUTION_ULTRA_HIGH": Maximum detail for high-resolution media
+            This sets resolution per-part rather than globally in generation config.
         vertexai: If True, use Vertex AI backend with GCS. If None, auto-detect from
                   GOOGLE_GENAI_USE_VERTEXAI env var. (Default: Gemini Developer API)
         project: GCP project ID (Vertex AI only). Falls back to GOOGLE_CLOUD_PROJECT env var.
@@ -225,12 +233,18 @@ def batch_process(
                 elif isinstance(part, (Path, Image.Image, bytes)):
                     # File content - upload to appropriate storage (GCS or File API)
                     file_info = utils.upload_file_for_batch(part, gemini_client)
-                    content_parts.append({
+                    file_part = {
                         "file_data": {
                             "file_uri": file_info["uri"],
                             "mime_type": file_info["mime_type"]
                         }
-                    })
+                    }
+                    # Add part-level media resolution if specified (experimental, v1alpha API)
+                    if part_media_resolution is not None:
+                        file_part["video_metadata"] = {
+                            "media_resolution": part_media_resolution
+                        }
+                    content_parts.append(file_part)
                 else:
                     raise ValueError(
                         f"Unsupported part type: {type(part)}. "
