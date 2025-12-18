@@ -294,7 +294,75 @@ def test_thinking_metadata_access():
         print("\n✓ Confirmed: thinking_budget=0 results in no thinking tokens")
 
 
-# Test 6: Batch embeddings
+# Test 6: thinking_level="MINIMAL" enforcement with gemini-3-flash
+def test_thinking_level_minimal_plain_text():
+    """Test thinking_level='MINIMAL' keeps thoughts < 500 tokens (plain text output)."""
+    prompts = [
+        ["What is 15 * 17? Show your work."],
+        ["If a car travels at 60mph for 2.5 hours, how far does it go?"],
+    ]
+
+    results, metadata = batch_process(
+        prompts=prompts,
+        schema=None,  # Plain text
+        model="gemini-3-flash-preview",
+        wait=True,
+        thinking_level="MINIMAL",
+        return_metadata=True,
+    )
+
+    assert len(results) == 2
+    assert len(metadata) == 2
+
+    print("\n✓ thinking_level='MINIMAL' with plain text:")
+    for i, meta in enumerate(metadata):
+        assert 'usageMetadata' in meta, "Metadata should contain usageMetadata"
+        thoughts_count = meta['usageMetadata'].get('thoughtsTokenCount', 0) or 0
+        print(f"  Request {i}: {thoughts_count} thinking tokens")
+        assert thoughts_count < 500, f"Expected < 500 thinking tokens with MINIMAL, got {thoughts_count}"
+
+    print("✓ Plain text: MINIMAL thinking enforced (< 500 tokens)")
+
+
+def test_thinking_level_minimal_structured():
+    """Test thinking_level='MINIMAL' keeps thoughts < 500 tokens (structured output)."""
+
+    class MathResult(BaseModel):
+        answer: int
+        explanation: str
+
+    prompts = [
+        ["What is 15 * 17? Show your work."],
+        ["If a car travels at 60mph for 2.5 hours, how far does it go in miles?"],
+    ]
+
+    results, metadata = batch_process(
+        prompts=prompts,
+        schema=MathResult,
+        model="gemini-3-flash-preview",
+        wait=True,
+        thinking_level="MINIMAL",
+        return_metadata=True,
+    )
+
+    assert len(results) == 2
+    assert len(metadata) == 2
+    assert isinstance(results[0], MathResult)
+    assert isinstance(results[1], MathResult)
+
+    print("\n✓ thinking_level='MINIMAL' with structured output:")
+    print(f"  Result 0: {results[0].model_dump()}")
+    print(f"  Result 1: {results[1].model_dump()}")
+    for i, meta in enumerate(metadata):
+        assert 'usageMetadata' in meta, "Metadata should contain usageMetadata"
+        thoughts_count = meta['usageMetadata'].get('thoughtsTokenCount', 0) or 0
+        print(f"  Request {i}: {thoughts_count} thinking tokens")
+        assert thoughts_count < 500, f"Expected < 500 thinking tokens with MINIMAL, got {thoughts_count}"
+
+    print("✓ Structured output: MINIMAL thinking enforced (< 500 tokens)")
+
+
+# Test 7: Batch embeddings
 def test_batch_embed_basic():
     """Test basic batch embedding generation."""
     texts = [
