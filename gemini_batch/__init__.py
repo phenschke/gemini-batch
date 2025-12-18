@@ -15,6 +15,7 @@ from typing import Union, Optional, List, Type, Dict, Any, get_origin, get_args
 from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
+from google.genai import types
 
 from . import config
 from . import batch
@@ -241,9 +242,7 @@ def batch_process(
                     }
                     # Add part-level media resolution if specified (experimental, v1alpha API)
                     if part_media_resolution is not None:
-                        file_part["video_metadata"] = {
-                            "media_resolution": part_media_resolution
-                        }
+                        file_part["media_resolution"] = part_media_resolution
                     content_parts.append(file_part)
                 else:
                     raise ValueError(
