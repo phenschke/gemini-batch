@@ -1066,16 +1066,17 @@ def test_batch_process_part_media_resolution_format(mock_client_class, tmp_path)
     {"media_resolution": {"level": "MEDIA_RESOLUTION_ULTRA_HIGH"}}
     Not just a string.
     """
+    from unittest.mock import AsyncMock
     from gemini_batch import batch_process
 
     mock_client = MagicMock()
     mock_client.vertexai = False
 
-    # Mock file upload
+    # Mock async file upload (used by parallel upload)
     mock_uploaded_file = MagicMock()
     mock_uploaded_file.uri = "https://generativelanguage.googleapis.com/v1/files/uploaded-123"
     mock_uploaded_file.mime_type = "image/png"
-    mock_client.client.files.upload.return_value = mock_uploaded_file
+    mock_client.client.aio.files.upload = AsyncMock(return_value=mock_uploaded_file)
 
     # Mock batch creation - capture the JSONL file content
     captured_jsonl_content = []

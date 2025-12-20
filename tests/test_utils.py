@@ -745,3 +745,198 @@ def test_create_list_wrapper_items_are_correct_type():
     result = WrapperModel.model_validate(data)
 
     assert isinstance(result.items[0], ItemModel)
+
+
+# ============================================================================
+# Async Upload Tests
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_upload_file_to_gemini_async_from_path(tmp_path):
+    """Test async file upload from Path object."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_file_to_gemini_async
+
+    # Create a test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Mock client with async upload
+    mock_client = MagicMock()
+    mock_uploaded = MagicMock()
+    mock_uploaded.uri = "https://generativelanguage.googleapis.com/v1/files/test-123"
+    mock_uploaded.mime_type = "image/png"
+    mock_uploaded.name = "files/test"
+    mock_client.aio.files.upload = AsyncMock(return_value=mock_uploaded)
+
+    # Upload
+    result = await upload_file_to_gemini_async(img_path, mock_client)
+
+    assert result["uri"] == "https://generativelanguage.googleapis.com/v1/files/test-123"
+    assert result["mime_type"] == "image/png"
+    mock_client.aio.files.upload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_to_gemini_async_from_pil():
+    """Test async file upload from PIL Image."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_file_to_gemini_async
+
+    img = Image.new('RGB', (100, 100), color='blue')
+
+    # Mock client with async upload
+    mock_client = MagicMock()
+    mock_uploaded = MagicMock()
+    mock_uploaded.uri = "https://generativelanguage.googleapis.com/v1/files/image-456"
+    mock_uploaded.mime_type = "image/png"
+    mock_uploaded.name = "files/img"
+    mock_client.aio.files.upload = AsyncMock(return_value=mock_uploaded)
+
+    # Upload
+    result = await upload_file_to_gemini_async(img, mock_client)
+
+    assert result["uri"] == "https://generativelanguage.googleapis.com/v1/files/image-456"
+    assert result["mime_type"] == "image/png"
+    mock_client.aio.files.upload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_to_gemini_async_from_bytes():
+    """Test async file upload from bytes."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_file_to_gemini_async
+
+    img = Image.new('RGB', (100, 100), color='green')
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    img_bytes = buf.getvalue()
+
+    # Mock client with async upload
+    mock_client = MagicMock()
+    mock_uploaded = MagicMock()
+    mock_uploaded.uri = "https://generativelanguage.googleapis.com/v1/files/bytes-789"
+    mock_uploaded.mime_type = "image/png"
+    mock_uploaded.name = "files/bytes"
+    mock_client.aio.files.upload = AsyncMock(return_value=mock_uploaded)
+
+    # Upload
+    result = await upload_file_to_gemini_async(img_bytes, mock_client)
+
+    assert result["uri"] == "https://generativelanguage.googleapis.com/v1/files/bytes-789"
+    assert result["mime_type"] == "image/png"
+    mock_client.aio.files.upload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_to_gemini_async_file_not_found():
+    """Test async upload raises error for missing file."""
+    from gemini_batch.utils import upload_file_to_gemini_async
+
+    mock_client = MagicMock()
+
+    with pytest.raises(ValueError, match="File not found"):
+        await upload_file_to_gemini_async(Path("/nonexistent/file.png"), mock_client)
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_empty_list():
+    """Test parallel upload with empty file list."""
+    from gemini_batch.utils import upload_files_parallel
+
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+
+    result = await upload_files_parallel([], mock_gemini_client)
+
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_multiple_files(tmp_path):
+    """Test parallel upload of multiple files."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_files_parallel
+
+    # Create test images
+    img1 = Image.new('RGB', (100, 100), color='red')
+    img_path1 = tmp_path / "test1.png"
+    img1.save(img_path1)
+
+    img2 = Image.new('RGB', (100, 100), color='blue')
+    img_path2 = tmp_path / "test2.png"
+    img2.save(img_path2)
+
+    # Mock client with async upload
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+
+    mock_uploaded1 = MagicMock()
+    mock_uploaded1.uri = "https://api.example.com/files/file1"
+    mock_uploaded1.mime_type = "image/png"
+
+    mock_uploaded2 = MagicMock()
+    mock_uploaded2.uri = "https://api.example.com/files/file2"
+    mock_uploaded2.mime_type = "image/png"
+
+    # Return different results for each call
+    mock_gemini_client.client.aio.files.upload = AsyncMock(
+        side_effect=[mock_uploaded1, mock_uploaded2]
+    )
+
+    # Upload
+    files = [
+        (0, 0, img_path1),  # prompt 0, part 0
+        (1, 0, img_path2),  # prompt 1, part 0
+    ]
+    result = await upload_files_parallel(files, mock_gemini_client, max_concurrent=2)
+
+    assert len(result) == 2
+    assert (0, 0) in result
+    assert (1, 0) in result
+    assert result[(0, 0)]["uri"] == "https://api.example.com/files/file1"
+    assert result[(1, 0)]["uri"] == "https://api.example.com/files/file2"
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_respects_concurrency(tmp_path):
+    """Test that parallel upload respects max_concurrent limit."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_files_parallel
+    import asyncio
+
+    # Create test images
+    images = []
+    for i in range(5):
+        img = Image.new('RGB', (10, 10), color=(i * 50, 0, 0))
+        img_path = tmp_path / f"test{i}.png"
+        img.save(img_path)
+        images.append(img_path)
+
+    # Track concurrent calls
+    concurrent_count = 0
+    max_concurrent_observed = 0
+
+    async def mock_upload(*args, **kwargs):
+        nonlocal concurrent_count, max_concurrent_observed
+        concurrent_count += 1
+        max_concurrent_observed = max(max_concurrent_observed, concurrent_count)
+        await asyncio.sleep(0.01)  # Simulate upload time
+        concurrent_count -= 1
+
+        mock_result = MagicMock()
+        mock_result.uri = f"https://api.example.com/files/file"
+        mock_result.mime_type = "image/png"
+        return mock_result
+
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+    mock_gemini_client.client.aio.files.upload = mock_upload
+
+    # Upload with max_concurrent=2
+    files = [(i, 0, images[i]) for i in range(5)]
+    await upload_files_parallel(files, mock_gemini_client, max_concurrent=2)
+
+    # Should never exceed 2 concurrent uploads
+    assert max_concurrent_observed <= 2

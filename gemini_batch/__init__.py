@@ -56,7 +56,7 @@ except ImportError:
     async_process = None
     process = None
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 __all__ = [
     "batch_process",
     # Batch embeddings
@@ -104,6 +104,7 @@ def batch_process(
     return_metadata: bool = False,
     media_resolution: Optional[str] = None,
     part_media_resolution: Optional[str] = None,
+    max_upload_workers: int = 10,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -150,6 +151,8 @@ def batch_process(
             - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost
             - "MEDIA_RESOLUTION_ULTRA_HIGH": Maximum detail for high-resolution media
             This sets resolution per-part rather than globally in generation config.
+        max_upload_workers: Maximum number of concurrent file uploads (default: 10).
+            Files are uploaded in parallel to improve performance with many images.
         vertexai: If True, use Vertex AI backend with GCS. If None, auto-detect from
                   GOOGLE_GENAI_USE_VERTEXAI env var. (Default: Gemini Developer API)
         project: GCP project ID (Vertex AI only). Falls back to GOOGLE_CLOUD_PROJECT env var.
@@ -211,6 +214,8 @@ def batch_process(
         >>> state = monitor_batch_job(job_name)
         >>> results = parse_batch_results("results.jsonl", Recipe)
     """
+    import asyncio
+
     # Initialize Gemini client (auto-detects backend from params or env vars)
     gemini_client = utils.GeminiClient(
         vertexai=vertexai,
@@ -219,7 +224,21 @@ def batch_process(
         gcs_bucket=gcs_bucket,
     )
 
-    # Build requests from prompts
+    # Phase 1: Collect all files to upload
+    files_to_upload = []
+    for i, prompt_parts in enumerate(prompts):
+        for j, part in enumerate(prompt_parts):
+            if isinstance(part, (Path, Image.Image, bytes)):
+                files_to_upload.append((i, j, part))
+
+    # Phase 2: Upload all files in parallel
+    uploaded_files: Dict[tuple, Dict[str, str]] = {}
+    if files_to_upload:
+        uploaded_files = asyncio.run(
+            utils.upload_files_parallel(files_to_upload, gemini_client, max_concurrent=max_upload_workers)
+        )
+
+    # Phase 3: Build requests from prompts using uploaded file URIs
     requests = []
     for i, prompt_parts in enumerate(prompts):
         for sample_idx in range(n_samples):
@@ -227,13 +246,13 @@ def batch_process(
 
             # Process each part in the prompt
             content_parts = []
-            for part in prompt_parts:
+            for j, part in enumerate(prompt_parts):
                 if isinstance(part, str):
                     # Text content
                     content_parts.append({"text": part})
                 elif isinstance(part, (Path, Image.Image, bytes)):
-                    # File content - upload to appropriate storage (GCS or File API)
-                    file_info = utils.upload_file_for_batch(part, gemini_client)
+                    # File content - lookup from uploaded files
+                    file_info = uploaded_files[(i, j)]
                     file_part = {
                         "file_data": {
                             "file_uri": file_info["uri"],

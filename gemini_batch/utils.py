@@ -29,6 +29,14 @@ except ImportError:
     HAS_GCS = False
     gcs_storage = None
 
+# Optional async GCS import for parallel uploads (Vertex AI)
+try:
+    from gcloud.aio.storage import Storage as AsyncGCSStorage
+    HAS_ASYNC_GCS = True
+except ImportError:
+    HAS_ASYNC_GCS = False
+    AsyncGCSStorage = None
+
 # Logging configuration
 def setup_logging(level: int = logging.INFO, format_string: str = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s", filename: Optional[str] = None) -> logging.Logger:
     """Set up logging configuration."""
@@ -653,6 +661,255 @@ def upload_file_to_gemini(
             f"Unsupported file type: {type(file)}. "
             f"Supported types: pathlib.Path (file path), PIL.Image.Image, bytes"
         )
+
+
+# ============================================================================
+# Async Upload Functions (for parallel file uploads)
+# ============================================================================
+
+async def upload_file_to_gemini_async(
+    file: Union[Path, Image.Image, bytes],
+    client: genai.Client
+) -> Dict[str, str]:
+    """
+    Async upload a file to Gemini File API using client.aio.files.upload().
+
+    Args:
+        file: File to upload - pathlib.Path (file path), PIL.Image.Image, or bytes
+        client: Gemini client instance
+
+    Returns:
+        Dictionary with 'uri' and 'mime_type' keys
+
+    Raises:
+        ValueError: If file type is unsupported or file not found
+    """
+    if isinstance(file, Path):
+        file_path = str(file)
+        if not os.path.exists(file_path):
+            raise ValueError(f"File not found: {file_path}")
+
+        logger.info(f"Async uploading file: {file_path}")
+        uploaded_file = await client.aio.files.upload(file=file_path)
+        logger.info(f"Uploaded file: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+
+        if not uploaded_file.uri or not uploaded_file.mime_type:
+            raise ValueError(f"Upload failed: missing uri or mime_type for {file_path}")
+
+        return {
+            "uri": uploaded_file.uri,
+            "mime_type": uploaded_file.mime_type
+        }
+
+    elif isinstance(file, Image.Image):
+        # PIL Image - save to temp file and upload
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            file.save(tmp, format="PNG")
+            tmp_path = tmp.name
+
+        try:
+            logger.info("Async uploading PIL Image as PNG")
+            uploaded_file = await client.aio.files.upload(file=tmp_path)
+            logger.info(f"Uploaded image: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+
+            if not uploaded_file.uri or not uploaded_file.mime_type:
+                raise ValueError("Upload failed: missing uri or mime_type for PIL Image")
+
+            return {
+                "uri": uploaded_file.uri,
+                "mime_type": uploaded_file.mime_type
+            }
+        finally:
+            os.unlink(tmp_path)
+
+    elif isinstance(file, bytes):
+        # Raw bytes - save to temp file and upload
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp.write(file)
+            tmp_path = tmp.name
+
+        try:
+            logger.info("Async uploading bytes as PNG")
+            uploaded_file = await client.aio.files.upload(file=tmp_path)
+            logger.info(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+
+            if not uploaded_file.uri or not uploaded_file.mime_type:
+                raise ValueError("Upload failed: missing uri or mime_type for bytes")
+
+            return {
+                "uri": uploaded_file.uri,
+                "mime_type": uploaded_file.mime_type
+            }
+        finally:
+            os.unlink(tmp_path)
+
+    else:
+        raise ValueError(
+            f"Unsupported file type: {type(file)}. "
+            f"Supported types: pathlib.Path (file path), PIL.Image.Image, bytes"
+        )
+
+
+async def upload_to_gcs_async(
+    gemini_client: "GeminiClient",
+    file: Union[Path, Image.Image, bytes, str],
+    destination_blob_name: Optional[str] = None,
+    bucket_name: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Async upload a file to Google Cloud Storage using gcloud-aio-storage.
+
+    Args:
+        gemini_client: GeminiClient instance (must be in Vertex AI mode)
+        file: File to upload - pathlib.Path, PIL.Image.Image, bytes, or str (file path)
+        destination_blob_name: Name for the blob in GCS. Auto-generated if None.
+        bucket_name: GCS bucket name. Uses client's bucket if None.
+
+    Returns:
+        Dictionary with 'uri' (gs:// URI) and 'mime_type'
+
+    Raises:
+        RuntimeError: If client is not in Vertex AI mode
+        ImportError: If gcloud-aio-storage is not installed
+    """
+    if not gemini_client.vertexai:
+        raise RuntimeError("upload_to_gcs_async requires Vertex AI mode")
+
+    if not HAS_ASYNC_GCS:
+        raise ImportError(
+            "gcloud-aio-storage is required for async Vertex AI uploads. "
+            "Install it with: pip install gemini-batch[vertexai]"
+        )
+
+    # Ensure bucket exists (sync call, but only happens once per client)
+    bucket_name = gemini_client.ensure_gcs_bucket(bucket_name)
+
+    # Determine file content and MIME type
+    if isinstance(file, str):
+        file = Path(file)
+
+    if isinstance(file, Path):
+        if not file.exists():
+            raise ValueError(f"File not found: {file}")
+
+        mime_type, _ = mimetypes.guess_type(str(file))
+        mime_type = mime_type or "application/octet-stream"
+
+        if destination_blob_name is None:
+            destination_blob_name = f"uploads/{uuid.uuid4()}_{file.name}"
+
+        # Read file content
+        with open(file, 'rb') as f:
+            file_data = f.read()
+
+    elif isinstance(file, Image.Image):
+        mime_type = "image/png"
+
+        if destination_blob_name is None:
+            destination_blob_name = f"uploads/{uuid.uuid4()}.png"
+
+        # Save image to bytes
+        img_buffer = io.BytesIO()
+        file.save(img_buffer, format="PNG")
+        file_data = img_buffer.getvalue()
+
+    elif isinstance(file, bytes):
+        # Try to detect if it's an image
+        mime_type = "application/octet-stream"
+        suffix = ".bin"
+
+        # Simple magic byte detection for common image formats
+        if file[:8] == b'\x89PNG\r\n\x1a\n':
+            mime_type = "image/png"
+            suffix = ".png"
+        elif file[:2] == b'\xff\xd8':
+            mime_type = "image/jpeg"
+            suffix = ".jpg"
+        elif file[:6] in (b'GIF87a', b'GIF89a'):
+            mime_type = "image/gif"
+            suffix = ".gif"
+
+        if destination_blob_name is None:
+            destination_blob_name = f"uploads/{uuid.uuid4()}{suffix}"
+
+        file_data = file
+
+    else:
+        raise ValueError(
+            f"Unsupported file type: {type(file)}. "
+            f"Supported types: str, pathlib.Path, PIL.Image.Image, bytes"
+        )
+
+    # Upload using async GCS client
+    async with AsyncGCSStorage() as gcs:
+        await gcs.upload(
+            bucket_name,
+            destination_blob_name,
+            file_data,
+            content_type=mime_type,
+        )
+
+    logger.info(f"Async uploaded to gs://{bucket_name}/{destination_blob_name}")
+
+    return {
+        "uri": f"gs://{bucket_name}/{destination_blob_name}",
+        "mime_type": mime_type
+    }
+
+
+async def upload_files_parallel(
+    files: List[Tuple[int, int, Union[Path, Image.Image, bytes]]],
+    gemini_client: "GeminiClient",
+    max_concurrent: int = 10,
+) -> Dict[Tuple[int, int], Dict[str, str]]:
+    """
+    Upload multiple files in parallel using asyncio.gather().
+
+    Args:
+        files: List of tuples (prompt_idx, part_idx, file) where file is Path, PIL Image, or bytes
+        gemini_client: GeminiClient instance
+        max_concurrent: Maximum number of concurrent uploads (default: 10)
+
+    Returns:
+        Dictionary mapping (prompt_idx, part_idx) to {"uri": ..., "mime_type": ...}
+
+    Raises:
+        Exception: If any upload fails (fail-fast behavior)
+    """
+    import asyncio
+
+    if not files:
+        return {}
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def upload_with_semaphore(
+        prompt_idx: int,
+        part_idx: int,
+        file: Union[Path, Image.Image, bytes]
+    ) -> Tuple[Tuple[int, int], Dict[str, str]]:
+        async with semaphore:
+            if gemini_client.vertexai:
+                result = await upload_to_gcs_async(gemini_client, file)
+            else:
+                result = await upload_file_to_gemini_async(file, gemini_client.client)
+            return ((prompt_idx, part_idx), result)
+
+    # Create upload tasks
+    tasks = [
+        upload_with_semaphore(prompt_idx, part_idx, file)
+        for prompt_idx, part_idx, file in files
+    ]
+
+    logger.info(f"Uploading {len(files)} files in parallel (max_concurrent={max_concurrent})")
+
+    # Run all uploads concurrently
+    results = await asyncio.gather(*tasks)
+
+    logger.info(f"Completed uploading {len(files)} files")
+
+    # Convert list of tuples to dictionary
+    return dict(results)
 
 
 def _convert_page_to_image(page: fitz.Page, doc: fitz.Document, dpi: int) -> Image.Image:
