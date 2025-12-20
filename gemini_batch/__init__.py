@@ -105,6 +105,7 @@ def batch_process(
     media_resolution: Optional[str] = None,
     part_media_resolution: Optional[str] = None,
     max_upload_workers: int = 10,
+    show_progress: bool = True,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -153,6 +154,7 @@ def batch_process(
             This sets resolution per-part rather than globally in generation config.
         max_upload_workers: Maximum number of concurrent file uploads (default: 10).
             Files are uploaded in parallel to improve performance with many images.
+        show_progress: Whether to show a progress bar during file uploads (default: True).
         vertexai: If True, use Vertex AI backend with GCS. If None, auto-detect from
                   GOOGLE_GENAI_USE_VERTEXAI env var. (Default: Gemini Developer API)
         project: GCP project ID (Vertex AI only). Falls back to GOOGLE_CLOUD_PROJECT env var.
@@ -235,7 +237,12 @@ def batch_process(
     uploaded_files: Dict[tuple, Dict[str, str]] = {}
     if files_to_upload:
         uploaded_files = asyncio.run(
-            utils.upload_files_parallel(files_to_upload, gemini_client, max_concurrent=max_upload_workers)
+            utils.upload_files_parallel(
+                files_to_upload,
+                gemini_client,
+                max_concurrent=max_upload_workers,
+                show_progress=show_progress,
+            )
         )
 
     # Phase 3: Build requests from prompts using uploaded file URIs

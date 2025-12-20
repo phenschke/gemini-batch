@@ -861,6 +861,7 @@ async def upload_files_parallel(
     files: List[Tuple[int, int, Union[Path, Image.Image, bytes]]],
     gemini_client: "GeminiClient",
     max_concurrent: int = 10,
+    show_progress: bool = True,
 ) -> Dict[Tuple[int, int], Dict[str, str]]:
     """
     Upload multiple files in parallel using asyncio.gather().
@@ -869,6 +870,7 @@ async def upload_files_parallel(
         files: List of tuples (prompt_idx, part_idx, file) where file is Path, PIL Image, or bytes
         gemini_client: GeminiClient instance
         max_concurrent: Maximum number of concurrent uploads (default: 10)
+        show_progress: Whether to show a progress bar (default: True)
 
     Returns:
         Dictionary mapping (prompt_idx, part_idx) to {"uri": ..., "mime_type": ...}
@@ -877,6 +879,7 @@ async def upload_files_parallel(
         Exception: If any upload fails (fail-fast behavior)
     """
     import asyncio
+    from tqdm.asyncio import tqdm_asyncio
 
     if not files:
         return {}
@@ -903,8 +906,15 @@ async def upload_files_parallel(
 
     logger.info(f"Uploading {len(files)} files in parallel (max_concurrent={max_concurrent})")
 
-    # Run all uploads concurrently
-    results = await asyncio.gather(*tasks)
+    # Run all uploads concurrently with optional progress bar
+    if show_progress:
+        results = await tqdm_asyncio.gather(
+            *tasks,
+            desc="Uploading files",
+            unit="file"
+        )
+    else:
+        results = await asyncio.gather(*tasks)
 
     logger.info(f"Completed uploading {len(files)} files")
 

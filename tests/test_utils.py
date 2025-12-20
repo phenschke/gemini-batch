@@ -868,35 +868,30 @@ async def test_upload_files_parallel_multiple_files(tmp_path):
     img_path2 = tmp_path / "test2.png"
     img2.save(img_path2)
 
-    # Mock client with async upload
+    # Mock client with async upload - use a single mock that returns consistent results
     mock_gemini_client = MagicMock()
     mock_gemini_client.vertexai = False
 
-    mock_uploaded1 = MagicMock()
-    mock_uploaded1.uri = "https://api.example.com/files/file1"
-    mock_uploaded1.mime_type = "image/png"
+    mock_uploaded = MagicMock()
+    mock_uploaded.uri = "https://api.example.com/files/file"
+    mock_uploaded.mime_type = "image/png"
 
-    mock_uploaded2 = MagicMock()
-    mock_uploaded2.uri = "https://api.example.com/files/file2"
-    mock_uploaded2.mime_type = "image/png"
-
-    # Return different results for each call
-    mock_gemini_client.client.aio.files.upload = AsyncMock(
-        side_effect=[mock_uploaded1, mock_uploaded2]
-    )
+    mock_gemini_client.client.aio.files.upload = AsyncMock(return_value=mock_uploaded)
 
     # Upload
     files = [
         (0, 0, img_path1),  # prompt 0, part 0
         (1, 0, img_path2),  # prompt 1, part 0
     ]
-    result = await upload_files_parallel(files, mock_gemini_client, max_concurrent=2)
+    result = await upload_files_parallel(files, mock_gemini_client, max_concurrent=2, show_progress=False)
 
     assert len(result) == 2
     assert (0, 0) in result
     assert (1, 0) in result
-    assert result[(0, 0)]["uri"] == "https://api.example.com/files/file1"
-    assert result[(1, 0)]["uri"] == "https://api.example.com/files/file2"
+    assert result[(0, 0)]["uri"] == "https://api.example.com/files/file"
+    assert result[(1, 0)]["uri"] == "https://api.example.com/files/file"
+    assert result[(0, 0)]["mime_type"] == "image/png"
+    assert result[(1, 0)]["mime_type"] == "image/png"
 
 
 @pytest.mark.asyncio
@@ -940,3 +935,66 @@ async def test_upload_files_parallel_respects_concurrency(tmp_path):
 
     # Should never exceed 2 concurrent uploads
     assert max_concurrent_observed <= 2
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_with_progress_bar(tmp_path):
+    """Test parallel upload shows progress bar when show_progress=True."""
+    from unittest.mock import AsyncMock, patch
+    from gemini_batch.utils import upload_files_parallel
+
+    # Create test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Mock client
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+
+    mock_uploaded = MagicMock()
+    mock_uploaded.uri = "https://api.example.com/files/file1"
+    mock_uploaded.mime_type = "image/png"
+    mock_gemini_client.client.aio.files.upload = AsyncMock(return_value=mock_uploaded)
+
+    # Mock tqdm_asyncio.gather to verify it's called
+    with patch('tqdm.asyncio.tqdm_asyncio') as mock_tqdm:
+        mock_tqdm.gather = AsyncMock(return_value=[((0, 0), {"uri": "test", "mime_type": "image/png"})])
+
+        files = [(0, 0, img_path)]
+        await upload_files_parallel(files, mock_gemini_client, show_progress=True)
+
+        # Verify tqdm_asyncio.gather was called
+        mock_tqdm.gather.assert_called_once()
+        call_kwargs = mock_tqdm.gather.call_args[1]
+        assert call_kwargs["desc"] == "Uploading files"
+        assert call_kwargs["unit"] == "file"
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_without_progress_bar(tmp_path):
+    """Test parallel upload doesn't show progress bar when show_progress=False."""
+    from unittest.mock import AsyncMock, patch
+    from gemini_batch.utils import upload_files_parallel
+
+    # Create test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Mock client
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+
+    mock_uploaded = MagicMock()
+    mock_uploaded.uri = "https://api.example.com/files/file1"
+    mock_uploaded.mime_type = "image/png"
+    mock_gemini_client.client.aio.files.upload = AsyncMock(return_value=mock_uploaded)
+
+    # Mock tqdm_asyncio to verify it's NOT called
+    with patch('tqdm.asyncio.tqdm_asyncio') as mock_tqdm:
+        files = [(0, 0, img_path)]
+        await upload_files_parallel(files, mock_gemini_client, show_progress=False)
+
+        # Verify tqdm_asyncio.gather was NOT called
+        mock_tqdm.gather.assert_not_called()
