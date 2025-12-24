@@ -63,6 +63,24 @@ results = batch_process(prompts, schema, n_samples=3)
 results = batch_process(prompts, schema, media_resolution="MEDIA_RESOLUTION_HIGH")
 ```
 
+**Per-part media resolution:** Fine-grained control using `google.genai.types.Part`
+```python
+from google.genai import types
+
+prompts = [[
+    "Compare these images:",
+    types.Part(
+        file_data=types.FileData(file_uri="...", mime_type="image/png"),
+        media_resolution=types.PartMediaResolution(level="MEDIA_RESOLUTION_ULTRA_HIGH")
+    ),
+    types.Part(
+        file_data=types.FileData(file_uri="...", mime_type="image/png"),
+        media_resolution=types.PartMediaResolution(level="MEDIA_RESOLUTION_LOW")
+    ),
+]]
+results = batch_process(prompts, schema)
+```
+
 **Batch embeddings:** Generate embeddings at 50% cost (Gemini Developer API only)
 ```python
 from gemini_batch import batch_embed

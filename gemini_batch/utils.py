@@ -607,9 +607,9 @@ def upload_file_to_gemini(
         if not os.path.exists(file_path):
             raise ValueError(f"File not found: {file_path}")
 
-        logger.info(f"Uploading file: {file_path}")
+        logger.debug(f"Uploading file: {file_path}")
         uploaded_file = client.files.upload(file=file_path)
-        logger.info(f"Uploaded file: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+        logger.debug(f"Uploaded file: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
         return {
             "uri": uploaded_file.uri,
@@ -624,9 +624,9 @@ def upload_file_to_gemini(
             tmp_path = tmp.name
 
         try:
-            logger.info(f"Uploading PIL Image as PNG")
+            logger.debug(f"Uploading PIL Image as PNG")
             uploaded_file = client.files.upload(file=tmp_path)
-            logger.info(f"Uploaded image: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+            logger.debug(f"Uploaded image: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
             return {
                 "uri": uploaded_file.uri,
@@ -644,9 +644,9 @@ def upload_file_to_gemini(
             tmp_path = tmp.name
 
         try:
-            logger.info(f"Uploading bytes as PNG")
+            logger.debug(f"Uploading bytes as PNG")
             uploaded_file = client.files.upload(file=tmp_path)
-            logger.info(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+            logger.debug(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
             return {
                 "uri": uploaded_file.uri,
@@ -689,9 +689,9 @@ async def upload_file_to_gemini_async(
         if not os.path.exists(file_path):
             raise ValueError(f"File not found: {file_path}")
 
-        logger.info(f"Async uploading file: {file_path}")
+        logger.debug(f"Async uploading file: {file_path}")
         uploaded_file = await client.aio.files.upload(file=file_path)
-        logger.info(f"Uploaded file: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+        logger.debug(f"Uploaded file: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
         if not uploaded_file.uri or not uploaded_file.mime_type:
             raise ValueError(f"Upload failed: missing uri or mime_type for {file_path}")
@@ -708,9 +708,9 @@ async def upload_file_to_gemini_async(
             tmp_path = tmp.name
 
         try:
-            logger.info("Async uploading PIL Image as PNG")
+            logger.debug("Async uploading PIL Image as PNG")
             uploaded_file = await client.aio.files.upload(file=tmp_path)
-            logger.info(f"Uploaded image: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+            logger.debug(f"Uploaded image: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
             if not uploaded_file.uri or not uploaded_file.mime_type:
                 raise ValueError("Upload failed: missing uri or mime_type for PIL Image")
@@ -729,9 +729,9 @@ async def upload_file_to_gemini_async(
             tmp_path = tmp.name
 
         try:
-            logger.info("Async uploading bytes as PNG")
+            logger.debug("Async uploading bytes as PNG")
             uploaded_file = await client.aio.files.upload(file=tmp_path)
-            logger.info(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
+            logger.debug(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
             if not uploaded_file.uri or not uploaded_file.mime_type:
                 raise ValueError("Upload failed: missing uri or mime_type for bytes")

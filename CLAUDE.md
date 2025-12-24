@@ -47,6 +47,7 @@ parsed = parse_batch_results(results_file, schema)
 - **`pathlib.Path`**: Image files (uploaded to File API)
 - **`PIL.Image`**: Images (saved to temp file, uploaded)
 - **Bytes**: Raw bytes (saved to temp file, uploaded)
+- **`google.genai.types.Part`**: Pre-built Part objects for per-part media resolution control
 
 **Important:** Strings are ALWAYS text. Use `Path()` for file paths.
 
@@ -57,6 +58,26 @@ prompts = [
     ["What is 2+2?"]
 ]
 ```
+
+**Per-part media resolution:** Use `types.Part` for fine-grained control:
+```python
+from google.genai import types
+
+prompts = [[
+    "Compare:",
+    types.Part(
+        file_data=types.FileData(file_uri="...", mime_type="image/png"),
+        media_resolution=types.PartMediaResolution(level="MEDIA_RESOLUTION_ULTRA_HIGH")
+    ),
+    types.Part(
+        file_data=types.FileData(file_uri="...", mime_type="image/png"),
+        media_resolution=types.PartMediaResolution(level="MEDIA_RESOLUTION_LOW")
+    ),
+]]
+```
+- Part objects must have `file_data` with `file_uri` set, or `text`
+- `inline_data` not supported (use bytes type directly for uploads)
+- Per-part `media_resolution` overrides global `part_media_resolution`
 
 **PDFs**: Not directly supported. Use `pdf_pages_to_images()` utility first for explicit page selection.
 

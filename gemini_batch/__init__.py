@@ -15,7 +15,7 @@ from typing import Union, Optional, List, Type, Dict, Any, get_origin, get_args
 from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
-from google.genai import types
+from google.genai import types as genai_types
 import hashlib
 import io
 
@@ -58,7 +58,7 @@ except ImportError:
     async_process = None
     process = None
 
-__version__ = "0.8.0"
+__version__ = "0.9.1"
 __all__ = [
     "batch_process",
     # Batch embeddings
@@ -116,7 +116,7 @@ def _compute_content_hash(file: Union[Path, Image.Image, bytes]) -> str:
 
 
 def batch_process(
-    prompts: List[List[Union[str, Path, Image.Image, bytes]]],
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
     schema: Optional[Type[BaseModel]] = None,
     model: str = config.MODEL_CONFIG["default_model"],
     wait: bool = True,
@@ -154,6 +154,9 @@ def batch_process(
             - pathlib.Path: Image file paths (auto-uploaded)
             - Image.Image: PIL images (auto-uploaded)
             - bytes: Raw image data (auto-uploaded)
+            - genai_types.Part: Pre-built Gemini Part objects (with file_data or text).
+              Use this for per-part media_resolution control. Part objects with
+              inline_data are not supported; use bytes type instead.
             Each inner list represents one batch request with mixed text/image content.
         schema: Optional Pydantic BaseModel class for structured output. If None, returns raw text.
         model: Gemini model to use (default: gemini-2.5-flash)
@@ -296,6 +299,24 @@ def batch_process(
                 if isinstance(part, str):
                     # Text content
                     content_parts.append({"text": part})
+                elif isinstance(part, genai_types.Part):
+                    # Pre-built Part object - validate and convert to dict
+                    if part.inline_data is not None:
+                        raise ValueError(
+                            "Part objects with inline_data are not supported. "
+                            "Use bytes type directly for content that needs uploading."
+                        )
+                    if part.file_data is not None and not part.file_data.file_uri:
+                        raise ValueError(
+                            "Part objects with file_data must have file_uri set."
+                        )
+                    # Convert Part to dict, preserving all fields including media_resolution
+                    part_dict = part.model_dump(exclude_none=True)
+                    # Apply global part_media_resolution only if Part doesn't have its own
+                    if part_media_resolution is not None and "media_resolution" not in part_dict:
+                        if part.file_data is not None:
+                            part_dict["media_resolution"] = {"level": part_media_resolution}
+                    content_parts.append(part_dict)
                 elif isinstance(part, (Path, Image.Image, bytes)):
                     # File content - lookup via content hash (enables deduplication)
                     content_hash = position_to_hash[(i, j)]
@@ -313,7 +334,7 @@ def batch_process(
                 else:
                     raise ValueError(
                         f"Unsupported part type: {type(part)}. "
-                        f"Supported types: str (text), pathlib.Path (file path), PIL.Image.Image, bytes"
+                        f"Supported types: str, pathlib.Path, PIL.Image.Image, bytes, types.Part"
                     )
 
             # Build request

@@ -1422,3 +1422,212 @@ def test_batch_process_deduplicates_bytes(mock_client_class, tmp_path):
 
     # Should only upload once
     assert upload_call_count == 1, f"Expected 1 upload, got {upload_call_count}"
+
+
+# Tests for types.Part objects in prompts
+class TestPartObjects:
+    """Tests for using google.genai.types.Part objects in prompts."""
+
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_part_with_file_data_and_media_resolution(self, mock_client_class, tmp_path):
+        """Test Part with file_data and media_resolution passes through correctly."""
+        from google.genai import types
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        # Create a Part with file_data and media_resolution
+        part = types.Part(
+            file_data=types.FileData(
+                file_uri="https://example.com/files/image.png",
+                mime_type="image/png"
+            ),
+            media_resolution=types.PartMediaResolution(level="MEDIA_RESOLUTION_ULTRA_HIGH")
+        )
+
+        prompts = [["Describe this image:", part]]
+
+        try:
+            batch_process(
+                prompts=prompts,
+                schema=TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+            )
+        except Exception:
+            pass
+
+        # Find and read the JSONL file
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) > 0, "No JSONL file was created"
+
+        jsonl_content = jsonl_files[0].read_text()
+        request_data = json.loads(jsonl_content.strip())
+
+        parts = request_data["request"]["contents"][0]["parts"]
+
+        # First part should be text
+        assert parts[0] == {"text": "Describe this image:"}
+
+        # Second part should have file_data and media_resolution preserved
+        file_part = parts[1]
+        assert "file_data" in file_part
+        assert file_part["file_data"]["file_uri"] == "https://example.com/files/image.png"
+        assert file_part["file_data"]["mime_type"] == "image/png"
+        assert "media_resolution" in file_part
+        assert file_part["media_resolution"]["level"] == "MEDIA_RESOLUTION_ULTRA_HIGH"
+
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_part_with_text(self, mock_client_class, tmp_path):
+        """Test Part with text content works correctly."""
+        from google.genai import types
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        # Create a Part with text
+        part = types.Part(text="This is some text content")
+
+        prompts = [["First part:", part, "last part"]]
+
+        try:
+            batch_process(
+                prompts=prompts,
+                schema=TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+            )
+        except Exception:
+            pass
+
+        # Find and read the JSONL file
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) > 0, "No JSONL file was created"
+
+        jsonl_content = jsonl_files[0].read_text()
+        request_data = json.loads(jsonl_content.strip())
+
+        parts = request_data["request"]["contents"][0]["parts"]
+
+        assert parts[0] == {"text": "First part:"}
+        assert parts[1] == {"text": "This is some text content"}
+        assert parts[2] == {"text": "last part"}
+
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_part_media_resolution_precedence(self, mock_client_class, tmp_path):
+        """Test that per-part media_resolution overrides global part_media_resolution."""
+        from google.genai import types
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        # Part with its own media_resolution
+        part_with_res = types.Part(
+            file_data=types.FileData(
+                file_uri="https://example.com/files/image1.png",
+                mime_type="image/png"
+            ),
+            media_resolution=types.PartMediaResolution(level="MEDIA_RESOLUTION_LOW")
+        )
+
+        # Part without media_resolution (should get global)
+        part_without_res = types.Part(
+            file_data=types.FileData(
+                file_uri="https://example.com/files/image2.png",
+                mime_type="image/png"
+            )
+        )
+
+        prompts = [[part_with_res, part_without_res]]
+
+        try:
+            batch_process(
+                prompts=prompts,
+                schema=TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+                part_media_resolution="MEDIA_RESOLUTION_HIGH",  # Global default
+            )
+        except Exception:
+            pass
+
+        # Find and read the JSONL file
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) > 0, "No JSONL file was created"
+
+        jsonl_content = jsonl_files[0].read_text()
+        request_data = json.loads(jsonl_content.strip())
+
+        parts = request_data["request"]["contents"][0]["parts"]
+
+        # First part should keep its own LOW resolution
+        assert parts[0]["media_resolution"]["level"] == "MEDIA_RESOLUTION_LOW"
+
+        # Second part should get the global HIGH resolution
+        assert parts[1]["media_resolution"]["level"] == "MEDIA_RESOLUTION_HIGH"
+
+    def test_part_with_inline_data_raises_error(self):
+        """Test that Part with inline_data raises ValueError."""
+        from google.genai import types
+        from gemini_batch import batch_process
+
+        # Create a Part with inline_data
+        part = types.Part(
+            inline_data=types.Blob(
+                data=b"some image bytes",
+                mime_type="image/png"
+            )
+        )
+
+        prompts = [["Describe this:", part]]
+
+        with pytest.raises(ValueError) as exc_info:
+            batch_process(
+                prompts=prompts,
+                schema=TestSchema,
+                wait=False,
+            )
+
+        assert "inline_data are not supported" in str(exc_info.value)
+
+    def test_part_with_file_data_no_uri_raises_error(self):
+        """Test that Part with file_data but no file_uri raises ValueError."""
+        from google.genai import types
+        from gemini_batch import batch_process
+
+        # Create a Part with file_data but no file_uri
+        part = types.Part(
+            file_data=types.FileData(
+                mime_type="image/png"
+                # file_uri is missing/None
+            )
+        )
+
+        prompts = [["Describe this:", part]]
+
+        with pytest.raises(ValueError) as exc_info:
+            batch_process(
+                prompts=prompts,
+                schema=TestSchema,
+                wait=False,
+            )
+
+        assert "file_uri" in str(exc_info.value)
