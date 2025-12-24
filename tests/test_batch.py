@@ -1160,3 +1160,265 @@ def test_batch_process_part_media_resolution_format(mock_client_class, tmp_path)
     assert isinstance(media_res, dict), f"media_resolution should be a dict, got {type(media_res)}"
     assert "level" in media_res, f"media_resolution should have 'level' key, got {media_res}"
     assert media_res["level"] == "MEDIA_RESOLUTION_ULTRA_HIGH", f"Expected MEDIA_RESOLUTION_ULTRA_HIGH, got {media_res['level']}"
+
+
+# Tests for image deduplication
+class TestContentHash:
+    """Tests for _compute_content_hash function."""
+
+    def test_hash_bytes_consistent(self):
+        """Same bytes content produces same hash."""
+        from gemini_batch import _compute_content_hash
+
+        data = b"test image data" * 100
+        hash1 = _compute_content_hash(data)
+        hash2 = _compute_content_hash(data)
+
+        assert hash1 == hash2
+
+    def test_hash_bytes_different(self):
+        """Different bytes content produces different hash."""
+        from gemini_batch import _compute_content_hash
+
+        data1 = b"test image data 1" * 100
+        data2 = b"test image data 2" * 100
+        hash1 = _compute_content_hash(data1)
+        hash2 = _compute_content_hash(data2)
+
+        assert hash1 != hash2
+
+    def test_hash_path_consistent(self, tmp_path):
+        """Same file produces same hash."""
+        from gemini_batch import _compute_content_hash
+
+        test_file = tmp_path / "test.bin"
+        test_file.write_bytes(b"file content" * 100)
+
+        hash1 = _compute_content_hash(test_file)
+        hash2 = _compute_content_hash(test_file)
+
+        assert hash1 == hash2
+
+    def test_hash_path_different_files(self, tmp_path):
+        """Different files produce different hashes."""
+        from gemini_batch import _compute_content_hash
+
+        file1 = tmp_path / "test1.bin"
+        file1.write_bytes(b"content 1" * 100)
+        file2 = tmp_path / "test2.bin"
+        file2.write_bytes(b"content 2" * 100)
+
+        hash1 = _compute_content_hash(file1)
+        hash2 = _compute_content_hash(file2)
+
+        assert hash1 != hash2
+
+    def test_hash_pil_image_consistent(self):
+        """Same PIL image produces same hash."""
+        from gemini_batch import _compute_content_hash
+        from PIL import Image
+
+        img = Image.new('RGB', (100, 100), color='red')
+
+        hash1 = _compute_content_hash(img)
+        hash2 = _compute_content_hash(img)
+
+        assert hash1 == hash2
+
+    def test_hash_pil_image_different(self):
+        """Different PIL images produce different hashes."""
+        from gemini_batch import _compute_content_hash
+        from PIL import Image
+
+        img1 = Image.new('RGB', (100, 100), color='red')
+        img2 = Image.new('RGB', (100, 100), color='blue')
+
+        hash1 = _compute_content_hash(img1)
+        hash2 = _compute_content_hash(img2)
+
+        assert hash1 != hash2
+
+    def test_hash_size_matters(self, tmp_path):
+        """Files with same prefix but different size have different hashes."""
+        from gemini_batch import _compute_content_hash
+
+        # Create two files with same first 64KB but different sizes
+        chunk = b"x" * 65536  # 64KB
+        file1 = tmp_path / "file1.bin"
+        file1.write_bytes(chunk)  # Exactly 64KB
+        file2 = tmp_path / "file2.bin"
+        file2.write_bytes(chunk + b"extra")  # 64KB + extra
+
+        hash1 = _compute_content_hash(file1)
+        hash2 = _compute_content_hash(file2)
+
+        assert hash1 != hash2
+
+
+@patch('gemini_batch.utils.GeminiClient')
+def test_batch_process_deduplicates_identical_images(mock_client_class, tmp_path):
+    """Test that identical images are only uploaded once."""
+    from unittest.mock import AsyncMock
+    from gemini_batch import batch_process
+
+    mock_client = MagicMock()
+    mock_client.vertexai = False
+
+    # Track upload calls
+    upload_call_count = 0
+    mock_uploaded_file = MagicMock()
+    mock_uploaded_file.uri = "https://generativelanguage.googleapis.com/v1/files/uploaded-123"
+    mock_uploaded_file.mime_type = "image/png"
+
+    async def mock_upload(*args, **kwargs):
+        nonlocal upload_call_count
+        upload_call_count += 1
+        return mock_uploaded_file
+
+    mock_client.client.aio.files.upload = mock_upload
+
+    mock_batch_job = MagicMock()
+    mock_batch_job.name = "batches/test-job"
+    mock_client.client.batches.create.return_value = mock_batch_job
+
+    mock_client_class.return_value = mock_client
+
+    # Create a test image file
+    test_image = tmp_path / "test.png"
+    # Create a minimal valid PNG
+    from PIL import Image
+    img = Image.new('RGB', (10, 10), color='red')
+    img.save(test_image)
+
+    # Use the SAME image in 3 prompts
+    prompts = [
+        ["Prompt 1:", test_image],
+        ["Prompt 2:", test_image],
+        ["Prompt 3:", test_image],
+    ]
+
+    try:
+        batch_process(
+            prompts=prompts,
+            schema=TestSchema,
+            wait=False,
+            jsonl_dir=str(tmp_path),
+        )
+    except Exception:
+        pass  # We just want to verify upload deduplication
+
+    # Should only upload once despite appearing in 3 prompts
+    assert upload_call_count == 1, f"Expected 1 upload, got {upload_call_count}"
+
+
+@patch('gemini_batch.utils.GeminiClient')
+def test_batch_process_uploads_different_images(mock_client_class, tmp_path):
+    """Test that different images are each uploaded."""
+    from unittest.mock import AsyncMock
+    from gemini_batch import batch_process
+
+    mock_client = MagicMock()
+    mock_client.vertexai = False
+
+    # Track upload calls
+    upload_call_count = 0
+    mock_uploaded_file = MagicMock()
+    mock_uploaded_file.uri = "https://generativelanguage.googleapis.com/v1/files/uploaded-123"
+    mock_uploaded_file.mime_type = "image/png"
+
+    async def mock_upload(*args, **kwargs):
+        nonlocal upload_call_count
+        upload_call_count += 1
+        return mock_uploaded_file
+
+    mock_client.client.aio.files.upload = mock_upload
+
+    mock_batch_job = MagicMock()
+    mock_batch_job.name = "batches/test-job"
+    mock_client.client.batches.create.return_value = mock_batch_job
+
+    mock_client_class.return_value = mock_client
+
+    # Create 3 DIFFERENT test images
+    from PIL import Image
+    img1 = tmp_path / "test1.png"
+    Image.new('RGB', (10, 10), color='red').save(img1)
+    img2 = tmp_path / "test2.png"
+    Image.new('RGB', (10, 10), color='green').save(img2)
+    img3 = tmp_path / "test3.png"
+    Image.new('RGB', (10, 10), color='blue').save(img3)
+
+    prompts = [
+        ["Prompt 1:", img1],
+        ["Prompt 2:", img2],
+        ["Prompt 3:", img3],
+    ]
+
+    try:
+        batch_process(
+            prompts=prompts,
+            schema=TestSchema,
+            wait=False,
+            jsonl_dir=str(tmp_path),
+        )
+    except Exception:
+        pass
+
+    # Should upload 3 times for 3 different images
+    assert upload_call_count == 3, f"Expected 3 uploads, got {upload_call_count}"
+
+
+@patch('gemini_batch.utils.GeminiClient')
+def test_batch_process_deduplicates_bytes(mock_client_class, tmp_path):
+    """Test that identical bytes content is only uploaded once."""
+    from unittest.mock import AsyncMock
+    from gemini_batch import batch_process
+
+    mock_client = MagicMock()
+    mock_client.vertexai = False
+
+    upload_call_count = 0
+    mock_uploaded_file = MagicMock()
+    mock_uploaded_file.uri = "https://generativelanguage.googleapis.com/v1/files/uploaded-123"
+    mock_uploaded_file.mime_type = "image/png"
+
+    async def mock_upload(*args, **kwargs):
+        nonlocal upload_call_count
+        upload_call_count += 1
+        return mock_uploaded_file
+
+    mock_client.client.aio.files.upload = mock_upload
+
+    mock_batch_job = MagicMock()
+    mock_batch_job.name = "batches/test-job"
+    mock_client.client.batches.create.return_value = mock_batch_job
+
+    mock_client_class.return_value = mock_client
+
+    # Create bytes image content
+    from PIL import Image
+    import io
+    img = Image.new('RGB', (10, 10), color='red')
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    image_bytes = buf.getvalue()
+
+    # Use the SAME bytes in 3 prompts
+    prompts = [
+        ["Prompt 1:", image_bytes],
+        ["Prompt 2:", image_bytes],
+        ["Prompt 3:", image_bytes],
+    ]
+
+    try:
+        batch_process(
+            prompts=prompts,
+            schema=TestSchema,
+            wait=False,
+            jsonl_dir=str(tmp_path),
+        )
+    except Exception:
+        pass
+
+    # Should only upload once
+    assert upload_call_count == 1, f"Expected 1 upload, got {upload_call_count}"

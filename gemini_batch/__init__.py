@@ -16,6 +16,8 @@ from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
 from google.genai import types
+import hashlib
+import io
 
 from . import config
 from . import batch
@@ -56,7 +58,7 @@ except ImportError:
     async_process = None
     process = None
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = [
     "batch_process",
     # Batch embeddings
@@ -89,6 +91,28 @@ __all__ = [
     "download_from_gcs",
     "list_gcs_blobs",
 ]
+
+
+def _compute_content_hash(file: Union[Path, Image.Image, bytes]) -> str:
+    """Compute hash for deduplication (first 64KB + size for speed)."""
+    CHUNK_SIZE = 65536  # 64KB
+
+    if isinstance(file, Path):
+        size = file.stat().st_size
+        with open(file, 'rb') as f:
+            chunk = f.read(CHUNK_SIZE)
+        return hashlib.sha256(chunk + str(size).encode()).hexdigest()
+
+    elif isinstance(file, Image.Image):
+        buf = io.BytesIO()
+        file.save(buf, format='PNG')
+        data = buf.getvalue()
+        return hashlib.sha256(data[:CHUNK_SIZE] + str(len(data)).encode()).hexdigest()
+
+    elif isinstance(file, bytes):
+        return hashlib.sha256(file[:CHUNK_SIZE] + str(len(file)).encode()).hexdigest()
+
+    raise ValueError(f"Unsupported file type: {type(file)}")
 
 
 def batch_process(
@@ -226,12 +250,21 @@ def batch_process(
         gcs_bucket=gcs_bucket,
     )
 
-    # Phase 1: Collect all files to upload
-    files_to_upload = []
+    # Phase 1: Collect files and compute content hashes for deduplication
+    files_to_upload = []       # Only unique files: [(prompt_idx, part_idx, file)]
+    position_to_hash = {}      # All positions: {(i, j): content_hash}
+    hash_to_position = {}      # First occurrence: {content_hash: (prompt_idx, part_idx)}
+
     for i, prompt_parts in enumerate(prompts):
         for j, part in enumerate(prompt_parts):
             if isinstance(part, (Path, Image.Image, bytes)):
-                files_to_upload.append((i, j, part))
+                content_hash = _compute_content_hash(part)
+                position_to_hash[(i, j)] = content_hash
+
+                if content_hash not in hash_to_position:
+                    # First occurrence - mark for upload
+                    hash_to_position[content_hash] = (i, j)
+                    files_to_upload.append((i, j, part))
 
     # Phase 2: Upload all files in parallel
     uploaded_files: Dict[tuple, Dict[str, str]] = {}
@@ -246,6 +279,12 @@ def batch_process(
         )
 
     # Phase 3: Build requests from prompts using uploaded file URIs
+    # Build hash -> URI mapping for deduplication lookup
+    hash_to_uri = {
+        position_to_hash[pos]: uri_info
+        for pos, uri_info in uploaded_files.items()
+    }
+
     requests = []
     for i, prompt_parts in enumerate(prompts):
         for sample_idx in range(n_samples):
@@ -258,8 +297,9 @@ def batch_process(
                     # Text content
                     content_parts.append({"text": part})
                 elif isinstance(part, (Path, Image.Image, bytes)):
-                    # File content - lookup from uploaded files
-                    file_info = uploaded_files[(i, j)]
+                    # File content - lookup via content hash (enables deduplication)
+                    content_hash = position_to_hash[(i, j)]
+                    file_info = hash_to_uri[content_hash]
                     file_part = {
                         "file_data": {
                             "file_uri": file_info["uri"],
