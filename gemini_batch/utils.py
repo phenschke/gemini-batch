@@ -419,7 +419,7 @@ def upload_to_gcs(
         
         blob = bucket.blob(destination_blob_name)
         blob.upload_from_filename(str(file), content_type=mime_type)
-        logger.info(f"Uploaded {file} to gs://{bucket_name}/{destination_blob_name}")
+        logger.debug(f"Uploaded {file} to gs://{bucket_name}/{destination_blob_name}")
         
     elif isinstance(file, Image.Image):
         mime_type = "image/png"
@@ -434,7 +434,7 @@ def upload_to_gcs(
         
         blob = bucket.blob(destination_blob_name)
         blob.upload_from_file(img_buffer, content_type=mime_type)
-        logger.info(f"Uploaded PIL Image to gs://{bucket_name}/{destination_blob_name}")
+        logger.debug(f"Uploaded PIL Image to gs://{bucket_name}/{destination_blob_name}")
         
     elif isinstance(file, bytes):
         # Try to detect if it's an image
@@ -457,7 +457,7 @@ def upload_to_gcs(
         
         blob = bucket.blob(destination_blob_name)
         blob.upload_from_string(file, content_type=mime_type)
-        logger.info(f"Uploaded bytes to gs://{bucket_name}/{destination_blob_name}")
+        logger.debug(f"Uploaded bytes to gs://{bucket_name}/{destination_blob_name}")
         
     else:
         raise ValueError(
@@ -851,7 +851,7 @@ async def upload_to_gcs_async(
             timeout=upload_timeout,
         )
 
-    logger.info(f"Async uploaded to gs://{bucket_name}/{destination_blob_name}")
+    logger.debug(f"Async uploaded to gs://{bucket_name}/{destination_blob_name}")
 
     return {
         "uri": f"gs://{bucket_name}/{destination_blob_name}",
