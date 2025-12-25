@@ -344,7 +344,7 @@ class GeminiClient:
         
         try:
             bucket = gcs.get_bucket(bucket_name)
-            logger.info(f"Using existing GCS bucket: {bucket_name}")
+            logger.debug(f"Using existing GCS bucket: {bucket_name}")
         except Exception:
             # Bucket doesn't exist, create it
             if not config.VERTEXAI_CONFIG.get("auto_create_bucket", True):
@@ -841,12 +841,14 @@ async def upload_to_gcs_async(
         )
 
     # Upload using async GCS client
+    upload_timeout = config.VERTEXAI_CONFIG.get("upload_timeout", 300)
     async with AsyncGCSStorage() as gcs:
         await gcs.upload(
             bucket_name,
             destination_blob_name,
             file_data,
             content_type=mime_type,
+            timeout=upload_timeout,
         )
 
     logger.info(f"Async uploaded to gs://{bucket_name}/{destination_blob_name}")
