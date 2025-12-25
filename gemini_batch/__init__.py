@@ -58,7 +58,7 @@ except ImportError:
     async_process = None
     process = None
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 __all__ = [
     "batch_process",
     # Batch embeddings
@@ -104,10 +104,10 @@ def _compute_content_hash(file: Union[Path, Image.Image, bytes]) -> str:
         return hashlib.sha256(chunk + str(size).encode()).hexdigest()
 
     elif isinstance(file, Image.Image):
-        buf = io.BytesIO()
-        file.save(buf, format='PNG')
-        data = buf.getvalue()
-        return hashlib.sha256(data[:CHUNK_SIZE] + str(len(data)).encode()).hexdigest()
+        # Use raw pixel bytes - much faster than PNG encoding
+        data = file.tobytes()
+        mode_size = f"{file.mode}_{file.size}".encode()
+        return hashlib.sha256(data[:CHUNK_SIZE] + mode_size).hexdigest()
 
     elif isinstance(file, bytes):
         return hashlib.sha256(file[:CHUNK_SIZE] + str(len(file)).encode()).hexdigest()
