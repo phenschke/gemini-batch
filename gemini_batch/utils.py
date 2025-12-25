@@ -864,6 +864,8 @@ async def upload_files_parallel(
     gemini_client: "GeminiClient",
     max_concurrent: int = 10,
     show_progress: bool = True,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
 ) -> Dict[Tuple[int, int], Dict[str, str]]:
     """
     Upload multiple files in parallel using asyncio.gather().
@@ -873,12 +875,14 @@ async def upload_files_parallel(
         gemini_client: GeminiClient instance
         max_concurrent: Maximum number of concurrent uploads (default: 10)
         show_progress: Whether to show a progress bar (default: True)
+        max_retries: Maximum number of retry attempts for transient errors (default: 3)
+        retry_delay: Base delay in seconds between retries, doubles each attempt (default: 1.0)
 
     Returns:
         Dictionary mapping (prompt_idx, part_idx) to {"uri": ..., "mime_type": ...}
 
     Raises:
-        Exception: If any upload fails (fail-fast behavior)
+        Exception: If any upload fails after all retries (fail-fast behavior)
     """
     import asyncio
     from tqdm.asyncio import tqdm_asyncio
@@ -894,11 +898,61 @@ async def upload_files_parallel(
         file: Union[Path, Image.Image, bytes]
     ) -> Tuple[Tuple[int, int], Dict[str, str]]:
         async with semaphore:
-            if gemini_client.vertexai:
-                result = await upload_to_gcs_async(gemini_client, file)
-            else:
-                result = await upload_file_to_gemini_async(file, gemini_client.client)
-            return ((prompt_idx, part_idx), result)
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    if gemini_client.vertexai:
+                        result = await upload_to_gcs_async(gemini_client, file)
+                    else:
+                        result = await upload_file_to_gemini_async(file, gemini_client.client)
+                    return ((prompt_idx, part_idx), result)
+                except (ConnectionResetError, OSError) as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        delay = retry_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Upload failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            f"Upload failed after {max_retries + 1} attempts: {e}"
+                        )
+                        raise
+                except Exception as e:
+                    # Check if it's a retryable aiohttp/network error
+                    error_name = type(e).__name__
+                    error_msg = str(e).lower()
+                    is_retryable = (
+                        # aiohttp client errors
+                        "Client" in error_name and ("OS" in error_name or "Connector" in error_name)
+                        # Network-related error messages
+                        or "connection" in error_msg
+                        or "connect" in error_msg
+                        or "network" in error_msg
+                        or "reset" in error_msg
+                        or "timeout" in error_msg
+                    )
+                    if is_retryable:
+                        last_error = e
+                        if attempt < max_retries:
+                            delay = retry_delay * (2 ** attempt)
+                            logger.warning(
+                                f"Upload failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                                f"Retrying in {delay:.1f}s..."
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            logger.error(
+                                f"Upload failed after {max_retries + 1} attempts: {e}"
+                            )
+                            raise
+                    else:
+                        # Non-retryable error
+                        raise
+            # Should never reach here, but just in case
+            raise last_error
 
     # Create upload tasks
     tasks = [

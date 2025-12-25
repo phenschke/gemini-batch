@@ -998,3 +998,171 @@ async def test_upload_files_parallel_without_progress_bar(tmp_path):
 
         # Verify tqdm_asyncio.gather was NOT called
         mock_tqdm.gather.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_retries_on_connection_error(tmp_path):
+    """Test that parallel upload retries on connection errors with exponential backoff."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_files_parallel
+    import asyncio
+
+    # Create test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Track upload attempts
+    attempt_count = 0
+
+    async def mock_upload_with_failures(*args, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count < 3:  # Fail first 2 attempts
+            raise ConnectionResetError("Connection reset by peer")
+        # Succeed on 3rd attempt
+        mock_result = MagicMock()
+        mock_result.uri = "https://api.example.com/files/file"
+        mock_result.mime_type = "image/png"
+        return mock_result
+
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+    mock_gemini_client.client.aio.files.upload = mock_upload_with_failures
+
+    # Upload with retry
+    files = [(0, 0, img_path)]
+    result = await upload_files_parallel(
+        files, mock_gemini_client,
+        show_progress=False,
+        max_retries=3,
+        retry_delay=0.01  # Fast retry for testing
+    )
+
+    # Should succeed after retries
+    assert len(result) == 1
+    assert (0, 0) in result
+    assert result[(0, 0)]["uri"] == "https://api.example.com/files/file"
+    assert attempt_count == 3  # Failed twice, succeeded on third
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_fails_after_max_retries(tmp_path):
+    """Test that parallel upload fails after exhausting all retries."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_files_parallel
+
+    # Create test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Track upload attempts
+    attempt_count = 0
+
+    async def mock_upload_always_fails(*args, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        raise ConnectionResetError("Connection reset by peer")
+
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+    mock_gemini_client.client.aio.files.upload = mock_upload_always_fails
+
+    # Upload should fail after max retries
+    files = [(0, 0, img_path)]
+    with pytest.raises(ConnectionResetError):
+        await upload_files_parallel(
+            files, mock_gemini_client,
+            show_progress=False,
+            max_retries=2,
+            retry_delay=0.01  # Fast retry for testing
+        )
+
+    # Should have attempted 3 times (initial + 2 retries)
+    assert attempt_count == 3
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_no_retry_on_non_connection_error(tmp_path):
+    """Test that parallel upload does not retry on non-connection errors."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_files_parallel
+
+    # Create test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Track upload attempts
+    attempt_count = 0
+
+    async def mock_upload_value_error(*args, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        raise ValueError("Invalid file format")
+
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+    mock_gemini_client.client.aio.files.upload = mock_upload_value_error
+
+    # Upload should fail immediately without retries
+    files = [(0, 0, img_path)]
+    with pytest.raises(ValueError, match="Invalid file format"):
+        await upload_files_parallel(
+            files, mock_gemini_client,
+            show_progress=False,
+            max_retries=3,
+            retry_delay=0.01
+        )
+
+    # Should have only attempted once (no retries for non-connection errors)
+    assert attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_upload_files_parallel_retries_on_network_unreachable(tmp_path):
+    """Test that parallel upload retries on 'network unreachable' errors (ClientConnectorError)."""
+    from unittest.mock import AsyncMock
+    from gemini_batch.utils import upload_files_parallel
+
+    # Create test image
+    img = Image.new('RGB', (100, 100), color='red')
+    img_path = tmp_path / "test.png"
+    img.save(img_path)
+
+    # Track upload attempts
+    attempt_count = 0
+
+    # Create an exception that mimics aiohttp ClientConnectorError
+    class ClientConnectorError(Exception):
+        pass
+
+    async def mock_upload_network_unreachable(*args, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count < 2:  # Fail first attempt
+            raise ClientConnectorError("Cannot connect to host www.googleapis.com:443 ssl:default [Network is unreachable]")
+        # Succeed on 2nd attempt
+        mock_result = MagicMock()
+        mock_result.uri = "https://api.example.com/files/file"
+        mock_result.mime_type = "image/png"
+        return mock_result
+
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.vertexai = False
+    mock_gemini_client.client.aio.files.upload = mock_upload_network_unreachable
+
+    # Upload with retry
+    files = [(0, 0, img_path)]
+    result = await upload_files_parallel(
+        files, mock_gemini_client,
+        show_progress=False,
+        max_retries=3,
+        retry_delay=0.01  # Fast retry for testing
+    )
+
+    # Should succeed after retry
+    assert len(result) == 1
+    assert (0, 0) in result
+    assert attempt_count == 2  # Failed once, succeeded on second
