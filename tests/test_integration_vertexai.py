@@ -62,7 +62,7 @@ def vertexai_client():
     client = GeminiClient(
         vertexai=True,
         project=project,
-        location="us-central1",
+        location="global",
         gcs_bucket=bucket,
     )
     return client
@@ -457,7 +457,7 @@ class TestGCSBucketManagement:
         client = GeminiClient(
             vertexai=True,
             project=project,
-            location="us-central1",
+            location="global",
             gcs_bucket=test_bucket,
         )
         
@@ -487,7 +487,7 @@ class TestGCSBucketManagement:
         client = GeminiClient(
             vertexai=True,
             project=project,
-            location="us-central1",
+            location="global",
             gcs_bucket=None,  # No bucket specified
         )
         

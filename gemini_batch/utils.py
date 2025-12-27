@@ -44,12 +44,17 @@ def setup_logging(level: int = logging.INFO, format_string: str = "[%(asctime)s]
     if filename:
         handlers.append(logging.FileHandler(filename))
     handlers.append(logging.StreamHandler())
-    
+
     logging.basicConfig(
         level=level,
         format=format_string,
         handlers=handlers,
     )
+
+    # Suppress verbose HTTP request logs from httpx/httpcore
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     return logging.getLogger("gemini_batch")
 
 logger = setup_logging()
@@ -277,17 +282,17 @@ class GeminiClient:
         
         self._client = None
         self._gcs_client = None
-    
+
     @property
     def client(self) -> genai.Client:
         """Get or create Gemini client."""
         if self._client is None:
             if self.vertexai:
+                # Vertex AI uses default API version (not v1alpha)
                 self._client = genai.Client(
                     vertexai=True,
                     project=self.project,
                     location=self.location,
-                    http_options={'api_version': 'v1alpha'}
                 )
             else:
                 self._client = genai.Client(api_key=self.api_key, http_options={'api_version': 'v1alpha'})

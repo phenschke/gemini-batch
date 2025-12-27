@@ -177,11 +177,17 @@ def monitor_batch_job(
 
     logger.info(f"Monitoring batch job: {job_name}")
 
+    previous_state = None
     while True:
         batch_job = client.client.batches.get(name=job_name)
         if batch_job.state:
             state = batch_job.state.name
-            logger.info(f"Job state: {state}")
+            # Only log state changes at INFO level, repeated polls at DEBUG
+            if state != previous_state:
+                logger.info(f"Job state: {state}")
+                previous_state = state
+            else:
+                logger.debug(f"Job state: {state} (polling...)")
             if state in app_config.BATCH_CONFIG["completed_states"]:
                 if state == 'JOB_STATE_FAILED':
                     logger.error(f"Job failed with error: {getattr(batch_job, 'error', None)}")
@@ -194,7 +200,7 @@ def monitor_batch_job(
                             logger.warning(f"{stats.failed_request_count} requests failed")
                 return state
         else:
-            logger.info("Job state is not available yet, continuing to poll.")
+            logger.debug("Job state is not available yet, continuing to poll.")
         time.sleep(poll_interval)
 
 
@@ -507,7 +513,7 @@ def parse_batch_results(
             if schema is None:
                 parsed_results.append(llm_output)
                 success_count += 1
-                logger.info(f"Successfully extracted raw text for {identifier}")
+                logger.debug(f"Successfully extracted raw text for {identifier}")
             else:
                 # Extract JSON from text (handles markdown, explanatory text, etc.)
                 extracted_json = extract_json_from_text(llm_output)
@@ -521,13 +527,13 @@ def parse_batch_results(
                     parsed = schema.model_validate_json(extracted_json)
                     parsed_results.append(parsed)
                     success_count += 1
-                    logger.info(f"Successfully parsed and validated result for {identifier}")
+                    logger.debug(f"Successfully parsed and validated result for {identifier}")
                 else:
                     data = json.loads(extracted_json)
                     parsed = schema.model_validate(data)
                     parsed_results.append(parsed)
                     success_count += 1
-                    logger.info(f"Successfully parsed result for {identifier}")
+                    logger.debug(f"Successfully parsed result for {identifier}")
 
         except (KeyError, IndexError, json.JSONDecodeError, AttributeError, ValidationError) as e:
             logger.error(f"Failed to parse result for {identifier}: {e}")
