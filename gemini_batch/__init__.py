@@ -280,6 +280,8 @@ def batch_process(
                 show_progress=show_progress,
             )
         )
+        # Clear file references from memory - no longer needed after upload
+        del files_to_upload
 
     # Phase 3: Build requests from prompts using uploaded file URIs
     # Build hash -> URI mapping for deduplication lookup
