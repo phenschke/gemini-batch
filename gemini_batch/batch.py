@@ -156,10 +156,47 @@ def create_batch_job(
     return batch_job.name
 
 
+def _is_retryable_network_error(exception: Exception) -> bool:
+    """
+    Check if an exception is a retryable network error.
+
+    Args:
+        exception: The exception to check
+
+    Returns:
+        True if the error is likely transient and should be retried
+    """
+    error_name = type(exception).__name__
+    error_msg = str(exception).lower()
+
+    # Check exception type names (handles httpx, httpcore, aiohttp, etc.)
+    retryable_types = (
+        'ConnectError', 'ConnectionError', 'ConnectionResetError',
+        'TimeoutError', 'ReadTimeout', 'ConnectTimeout',
+        'NetworkError', 'OSError', 'IOError',
+        'ClientConnectorError', 'ServerDisconnectedError',
+    )
+    if any(t in error_name for t in retryable_types):
+        return True
+
+    # Check error message for network-related keywords
+    network_keywords = (
+        'network', 'connection', 'unreachable', 'refused',
+        'reset', 'timeout', 'temporary', 'unavailable',
+        'errno 101', 'errno 104', 'errno 110', 'errno 111',
+    )
+    if any(kw in error_msg for kw in network_keywords):
+        return True
+
+    return False
+
+
 def monitor_batch_job(
     job_name: str,
     poll_interval: int = app_config.BATCH_CONFIG["poll_interval"],
     client: Optional[GeminiClient] = None,
+    retry_count: int = app_config.BATCH_CONFIG["monitor_retry_count"],
+    retry_delay: float = app_config.BATCH_CONFIG["monitor_retry_delay"],
 ) -> str:
     """
     Monitor a batch job until completion.
@@ -168,6 +205,8 @@ def monitor_batch_job(
         job_name: Name of the batch job to monitor
         poll_interval: Seconds to wait between status checks
         client: GeminiClient instance. If None, creates a new one (auto-detects backend).
+        retry_count: Number of retries for transient network errors (default: 5)
+        retry_delay: Initial delay between retries in seconds, doubles each attempt (default: 2.0)
 
     Returns:
         Final job state
@@ -178,29 +217,56 @@ def monitor_batch_job(
     logger.info(f"Monitoring batch job: {job_name}")
 
     previous_state = None
+    consecutive_failures = 0
+
     while True:
-        batch_job = client.client.batches.get(name=job_name)
-        if batch_job.state:
-            state = batch_job.state.name
-            # Only log state changes at INFO level, repeated polls at DEBUG
-            if state != previous_state:
-                logger.info(f"Job state: {state}")
-                previous_state = state
+        try:
+            batch_job = client.client.batches.get(name=job_name)
+            # Reset failure counter on success
+            consecutive_failures = 0
+
+            if batch_job.state:
+                state = batch_job.state.name
+                # Only log state changes at INFO level, repeated polls at DEBUG
+                if state != previous_state:
+                    logger.info(f"Job state: {state}")
+                    previous_state = state
+                else:
+                    logger.debug(f"Job state: {state} (polling...)")
+                if state in app_config.BATCH_CONFIG["completed_states"]:
+                    if state == 'JOB_STATE_FAILED':
+                        logger.error(f"Job failed with error: {getattr(batch_job, 'error', None)}")
+                    elif state == 'JOB_STATE_SUCCEEDED':
+                        # Log batch stats
+                        if hasattr(batch_job, 'batch_stats'):
+                            stats = batch_job.batch_stats
+                            logger.info(f"Batch stats: {stats}")
+                            if hasattr(stats, 'failed_request_count') and stats.failed_request_count > 0:
+                                logger.warning(f"{stats.failed_request_count} requests failed")
+                    return state
             else:
-                logger.debug(f"Job state: {state} (polling...)")
-            if state in app_config.BATCH_CONFIG["completed_states"]:
-                if state == 'JOB_STATE_FAILED':
-                    logger.error(f"Job failed with error: {getattr(batch_job, 'error', None)}")
-                elif state == 'JOB_STATE_SUCCEEDED':
-                    # Log batch stats
-                    if hasattr(batch_job, 'batch_stats'):
-                        stats = batch_job.batch_stats
-                        logger.info(f"Batch stats: {stats}")
-                        if hasattr(stats, 'failed_request_count') and stats.failed_request_count > 0:
-                            logger.warning(f"{stats.failed_request_count} requests failed")
-                return state
-        else:
-            logger.debug("Job state is not available yet, continuing to poll.")
+                logger.debug("Job state is not available yet, continuing to poll.")
+
+        except Exception as e:
+            if _is_retryable_network_error(e):
+                consecutive_failures += 1
+                if consecutive_failures <= retry_count:
+                    delay = retry_delay * (2 ** (consecutive_failures - 1))
+                    logger.warning(
+                        f"Network error during monitoring (attempt {consecutive_failures}/{retry_count}): {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(
+                        f"Max retries ({retry_count}) exceeded for network errors. Last error: {e}"
+                    )
+                    raise
+            else:
+                # Non-retryable error, re-raise immediately
+                raise
+
         time.sleep(poll_interval)
 
 

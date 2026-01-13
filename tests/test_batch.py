@@ -12,6 +12,7 @@ from gemini_batch.batch import (
     download_batch_results,
     get_inline_results,
     parse_batch_results,
+    _is_retryable_network_error,
 )
 
 
@@ -84,6 +85,83 @@ def test_monitor_batch_job_failed(mock_sleep, mock_client_class):
     state = monitor_batch_job("batches/test-job")
 
     assert state == 'JOB_STATE_FAILED'
+
+
+@patch('gemini_batch.batch.GeminiClient')
+@patch('time.sleep', return_value=None)
+def test_monitor_batch_job_retries_on_network_error(mock_sleep, mock_client_class):
+    """Test that monitor_batch_job retries on transient network errors."""
+    mock_client = MagicMock()
+    mock_batch_job = MagicMock()
+    mock_state = MagicMock()
+    mock_state.name = 'JOB_STATE_SUCCEEDED'
+    mock_batch_job.state = mock_state
+    mock_stats = MagicMock()
+    mock_stats.failed_request_count = 0
+    mock_batch_job.batch_stats = mock_stats
+
+    # First two calls raise network error, third succeeds
+    class MockConnectError(Exception):
+        pass
+    MockConnectError.__name__ = 'ConnectError'
+
+    mock_client.client.batches.get.side_effect = [
+        MockConnectError("[Errno 101] Network is unreachable"),
+        MockConnectError("[Errno 101] Network is unreachable"),
+        mock_batch_job,
+    ]
+    mock_client_class.return_value = mock_client
+
+    state = monitor_batch_job("batches/test-job", retry_count=3, retry_delay=1.0)
+
+    assert state == 'JOB_STATE_SUCCEEDED'
+    assert mock_client.client.batches.get.call_count == 3
+    # Verify exponential backoff: first retry waits 1s, second waits 2s
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_any_call(1.0)
+    mock_sleep.assert_any_call(2.0)
+
+
+@patch('gemini_batch.batch.GeminiClient')
+@patch('time.sleep', return_value=None)
+def test_monitor_batch_job_exceeds_max_retries(mock_sleep, mock_client_class):
+    """Test that monitor_batch_job raises after exhausting retries."""
+    mock_client = MagicMock()
+
+    # All calls raise network error
+    class MockConnectError(Exception):
+        pass
+    MockConnectError.__name__ = 'ConnectError'
+
+    mock_client.client.batches.get.side_effect = MockConnectError("[Errno 101] Network is unreachable")
+    mock_client_class.return_value = mock_client
+
+    with pytest.raises(Exception) as exc_info:
+        monitor_batch_job("batches/test-job", retry_count=2, retry_delay=1.0)
+
+    assert "Network is unreachable" in str(exc_info.value)
+    # Initial call + 2 retries = 3 calls total
+    assert mock_client.client.batches.get.call_count == 3
+
+
+def test_is_retryable_network_error():
+    """Test _is_retryable_network_error helper function."""
+    # Test ConnectError by type name
+    class ConnectError(Exception):
+        pass
+    assert _is_retryable_network_error(ConnectError("test")) is True
+
+    # Test ConnectionResetError
+    assert _is_retryable_network_error(ConnectionResetError()) is True
+
+    # Test by error message
+    assert _is_retryable_network_error(Exception("Network is unreachable")) is True
+    assert _is_retryable_network_error(Exception("[Errno 101] something")) is True
+    assert _is_retryable_network_error(Exception("connection refused")) is True
+
+    # Test non-retryable errors
+    assert _is_retryable_network_error(ValueError("invalid value")) is False
+    assert _is_retryable_network_error(KeyError("missing key")) is False
 
 
 @patch('gemini_batch.batch.GeminiClient')

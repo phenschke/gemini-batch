@@ -22,6 +22,8 @@ BATCH_CONFIG = {
     },
     "default_jsonl_dir": ".gemini_batch",  # Default directory for JSONL request files
     "default_results_dir": ".gemini_batch",  # Default directory for JSONL result files
+    "monitor_retry_count": 5,  # Number of retries for transient network errors during monitoring
+    "monitor_retry_delay": 2.0,  # Initial delay between retries (exponential backoff)
 }
 
 # --- Image Processing Settings ---
