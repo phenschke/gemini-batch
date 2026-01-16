@@ -361,6 +361,7 @@ def batch_process(
     gen_config = utils.build_generation_config(
         response_schema=_effective_schema,
         media_resolution=media_resolution,
+        model=model,
         **generation_kwargs
     )
 

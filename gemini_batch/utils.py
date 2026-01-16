@@ -1115,6 +1115,7 @@ def build_generation_config(
     top_k: Optional[int] = None,
     max_output_tokens: Optional[int] = None,
     media_resolution: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> types.GenerateContentConfig:
     """
     Builds a generation configuration for the Gemini API.
@@ -1122,6 +1123,8 @@ def build_generation_config(
     Args:
         response_schema: The schema for the response (either types.Schema or Pydantic BaseModel class).
         thinking_budget: The thinking budget (int, for Flash models). Cannot be used with thinking_level.
+            Note: For gemini-3* models, thinking_budget=0 is automatically converted to
+            thinking_level="MINIMAL" as these models don't support thinking_budget.
         thinking_level: The thinking level (str: "low" or "high", for Gemini 3.0 Pro). Cannot be used with thinking_budget.
         temperature: The temperature.
         top_p: The top-p value.
@@ -1132,6 +1135,7 @@ def build_generation_config(
             - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed (560 tokens for images)
             - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost (1120 tokens for images)
             Controls the maximum number of tokens allocated for media inputs.
+        model: The model name (used for automatic thinking config conversion for gemini-3* models).
 
     Returns:
         A types.GenerateContentConfig object representing the generation configuration.
@@ -1147,6 +1151,13 @@ def build_generation_config(
     if response_schema is not None:
         gen_config_dict["response_mime_type"] = "application/json"
         gen_config_dict["response_json_schema"] = _transformers.t_schema(client=None, origin=response_schema)
+
+    # Auto-convert thinking_budget=0 to thinking_level="MINIMAL" for gemini-3* models
+    is_gemini_3_model = model is not None and model.startswith("gemini-3")
+    if is_gemini_3_model and thinking_budget == 0 and thinking_level is None:
+        print(f"[gemini-batch] Note: thinking_budget=0 auto-converted to thinking_level='MINIMAL' for {model}")
+        thinking_level = "MINIMAL"
+        thinking_budget = None
 
     # Validate that only one thinking parameter is provided
     if thinking_budget is not None and thinking_level is not None:
