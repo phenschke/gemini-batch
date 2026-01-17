@@ -12,6 +12,8 @@ from gemini_batch.batch import (
     download_batch_results,
     get_inline_results,
     parse_batch_results,
+    get_batch_job_output_uri,
+    resume_batch_job,
     _is_retryable_network_error,
 )
 
@@ -1709,3 +1711,290 @@ class TestPartObjects:
             )
 
         assert "file_uri" in str(exc_info.value)
+
+
+# Tests for resume functionality
+class TestResumeBatchJob:
+    """Tests for get_batch_job_output_uri and resume_batch_job functions."""
+
+    @patch('gemini_batch.batch.list_gcs_blobs')
+    @patch('gemini_batch.batch.GeminiClient')
+    def test_get_batch_job_output_uri_success(self, mock_client_class, mock_list_blobs):
+        """Test getting GCS output URI from a Vertex AI batch job."""
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client.gcs_bucket = "test-bucket"
+
+        mock_batch_job = MagicMock()
+        mock_dest = MagicMock()
+        mock_dest.gcs_uri = "gs://test-bucket/batch-results/batch-123/"
+        mock_batch_job.dest = mock_dest
+        mock_client.client.batches.get.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        # Mock list_gcs_blobs to return a predictions file
+        mock_list_blobs.return_value = [
+            "gs://test-bucket/batch-results/batch-123/predictions.jsonl"
+        ]
+
+        result = get_batch_job_output_uri("projects/test/locations/us-central1/batchJobs/123")
+
+        assert result == "gs://test-bucket/batch-results/batch-123/predictions.jsonl"
+        mock_client.client.batches.get.assert_called_once_with(name="projects/test/locations/us-central1/batchJobs/123")
+
+    @patch('gemini_batch.batch.GeminiClient')
+    def test_get_batch_job_output_uri_no_dest(self, mock_client_class):
+        """Test error when job has no destination."""
+        mock_client = MagicMock()
+        mock_batch_job = MagicMock()
+        mock_batch_job.dest = None
+        mock_client.client.batches.get.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with pytest.raises(ValueError, match="has no destination configured"):
+            get_batch_job_output_uri("projects/test/batchJobs/123")
+
+    @patch('gemini_batch.batch.GeminiClient')
+    def test_get_batch_job_output_uri_not_vertexai(self, mock_client_class):
+        """Test error when job is not a Vertex AI job (no GCS destination)."""
+        mock_client = MagicMock()
+        mock_batch_job = MagicMock()
+        mock_dest = MagicMock()
+        mock_dest.gcs_uri = None  # Not a Vertex AI job
+        mock_dest.file_name = "files/results-123"  # Has File API destination instead
+        mock_batch_job.dest = mock_dest
+        mock_client.client.batches.get.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with pytest.raises(ValueError, match="not a Vertex AI job"):
+            get_batch_job_output_uri("batches/test-job")
+
+    @patch('gemini_batch.batch.list_gcs_blobs')
+    @patch('gemini_batch.batch.GeminiClient')
+    def test_get_batch_job_output_uri_default_path(self, mock_client_class, mock_list_blobs):
+        """Test fallback to default predictions.jsonl path when no files found."""
+        mock_client = MagicMock()
+        mock_client.gcs_bucket = "test-bucket"
+
+        mock_batch_job = MagicMock()
+        mock_dest = MagicMock()
+        mock_dest.gcs_uri = "gs://test-bucket/batch-results/batch-456/"
+        mock_batch_job.dest = mock_dest
+        mock_client.client.batches.get.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        # Mock list_gcs_blobs to return empty list
+        mock_list_blobs.return_value = []
+
+        result = get_batch_job_output_uri("projects/test/batchJobs/456")
+
+        # Should return default path
+        assert result == "gs://test-bucket/batch-results/batch-456/predictions.jsonl"
+
+    @patch('gemini_batch.batch.get_batch_job_output_uri')
+    @patch('gemini_batch.batch.GeminiClient')
+    @patch('time.time', return_value=1700000000)
+    def test_resume_batch_job_with_job_name(self, mock_time, mock_client_class, mock_get_output_uri):
+        """Test resuming a batch job using job name lookup."""
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client.ensure_gcs_bucket.return_value = "test-bucket"
+
+        mock_new_job = MagicMock()
+        mock_new_job.name = "projects/test/locations/us-central1/batchJobs/456"
+        mock_client.client.batches.create.return_value = mock_new_job
+        mock_client_class.return_value = mock_client
+
+        # Mock the output URI lookup
+        mock_get_output_uri.return_value = "gs://test-bucket/batch-results/batch-123/predictions.jsonl"
+
+        result = resume_batch_job("projects/test/locations/us-central1/batchJobs/123")
+
+        assert result == "projects/test/locations/us-central1/batchJobs/456"
+        mock_get_output_uri.assert_called_once()
+        mock_client.client.batches.create.assert_called_once()
+
+        # Verify the create call used the output URI as source
+        create_call = mock_client.client.batches.create.call_args
+        assert create_call.kwargs['src'] == "gs://test-bucket/batch-results/batch-123/predictions.jsonl"
+
+    @patch('gemini_batch.batch.GeminiClient')
+    @patch('time.time', return_value=1700000000)
+    def test_resume_batch_job_with_gcs_uri(self, mock_time, mock_client_class):
+        """Test resuming a batch job using direct GCS URI."""
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client.ensure_gcs_bucket.return_value = "test-bucket"
+
+        mock_new_job = MagicMock()
+        mock_new_job.name = "projects/test/locations/us-central1/batchJobs/789"
+        mock_client.client.batches.create.return_value = mock_new_job
+        mock_client_class.return_value = mock_client
+
+        # Use direct GCS URI
+        result = resume_batch_job("gs://my-bucket/results/predictions.jsonl")
+
+        assert result == "projects/test/locations/us-central1/batchJobs/789"
+        mock_client.client.batches.create.assert_called_once()
+
+        # Verify the create call used the GCS URI directly as source
+        create_call = mock_client.client.batches.create.call_args
+        assert create_call.kwargs['src'] == "gs://my-bucket/results/predictions.jsonl"
+
+    @patch('gemini_batch.batch.GeminiClient')
+    def test_resume_batch_job_not_vertexai_error(self, mock_client_class):
+        """Test error when trying to resume without Vertex AI backend."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False  # Not using Vertex AI
+        mock_client_class.return_value = mock_client
+
+        with pytest.raises(ValueError, match="only available with Vertex AI"):
+            resume_batch_job("projects/test/batchJobs/123")
+
+    @patch('gemini_batch.batch.GeminiClient')
+    @patch('time.time', return_value=1700000000)
+    def test_resume_batch_job_custom_display_name(self, mock_time, mock_client_class):
+        """Test resuming with custom display name."""
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client.ensure_gcs_bucket.return_value = "test-bucket"
+
+        mock_new_job = MagicMock()
+        mock_new_job.name = "projects/test/batchJobs/456"
+        mock_client.client.batches.create.return_value = mock_new_job
+        mock_client_class.return_value = mock_client
+
+        result = resume_batch_job(
+            "gs://bucket/predictions.jsonl",
+            job_display_name="my-resumed-job"
+        )
+
+        # Verify custom display name was used
+        create_call = mock_client.client.batches.create.call_args
+        config = create_call.kwargs['config']
+        assert config.display_name == "my-resumed-job"
+
+    @patch('gemini_batch.batch.GeminiClient')
+    @patch('time.time', return_value=1700000000)
+    def test_resume_batch_job_custom_output_path(self, mock_time, mock_client_class):
+        """Test resuming with custom GCS output path."""
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client.ensure_gcs_bucket.return_value = "test-bucket"
+
+        mock_new_job = MagicMock()
+        mock_new_job.name = "projects/test/batchJobs/456"
+        mock_client.client.batches.create.return_value = mock_new_job
+        mock_client_class.return_value = mock_client
+
+        result = resume_batch_job(
+            "gs://bucket/predictions.jsonl",
+            gcs_output_path="gs://custom-bucket/custom-output/"
+        )
+
+        # Verify custom output path was used
+        create_call = mock_client.client.batches.create.call_args
+        config = create_call.kwargs['config']
+        assert config.dest == "gs://custom-bucket/custom-output/"
+
+
+class TestBatchProcessResumeFrom:
+    """Tests for batch_process with resume_from parameter."""
+
+    @patch('gemini_batch.batch.resume_batch_job')
+    @patch('gemini_batch.batch.monitor_batch_job')
+    @patch('gemini_batch.batch.download_batch_results')
+    @patch('gemini_batch.batch.parse_batch_results')
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_batch_process_resume_from_wait(
+        self, mock_client_class, mock_parse, mock_download, mock_monitor, mock_resume
+    ):
+        """Test batch_process with resume_from and wait=True."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client_class.return_value = mock_client
+
+        mock_resume.return_value = "projects/test/batchJobs/456"
+        mock_monitor.return_value = "JOB_STATE_SUCCEEDED"
+        mock_download.return_value = "/tmp/results.jsonl"
+        mock_parse.return_value = [TestSchema(name="Test", value=1)]
+
+        results = batch_process(
+            prompts=[],  # Empty when resuming
+            schema=TestSchema,
+            resume_from="projects/test/batchJobs/123",
+            vertexai=True,
+        )
+
+        assert len(results) == 1
+        assert results[0].name == "Test"
+        mock_resume.assert_called_once()
+        mock_monitor.assert_called_once()
+        mock_download.assert_called_once()
+        mock_parse.assert_called_once()
+
+    @patch('gemini_batch.batch.resume_batch_job')
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_batch_process_resume_from_no_wait(self, mock_client_class, mock_resume):
+        """Test batch_process with resume_from and wait=False."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client_class.return_value = mock_client
+
+        mock_resume.return_value = "projects/test/batchJobs/456"
+
+        result = batch_process(
+            prompts=[],
+            schema=TestSchema,
+            resume_from="projects/test/batchJobs/123",
+            vertexai=True,
+            wait=False,
+        )
+
+        # Should return job name when wait=False
+        assert result == "projects/test/batchJobs/456"
+        mock_resume.assert_called_once()
+
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_batch_process_resume_from_not_vertexai_error(self, mock_client_class):
+        """Test error when using resume_from without Vertex AI backend."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False  # Not using Vertex AI
+        mock_client_class.return_value = mock_client
+
+        with pytest.raises(ValueError, match="only supported with Vertex AI"):
+            batch_process(
+                prompts=[],
+                schema=TestSchema,
+                resume_from="projects/test/batchJobs/123",
+            )
+
+    @patch('gemini_batch.batch.resume_batch_job')
+    @patch('gemini_batch.batch.monitor_batch_job')
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_batch_process_resume_from_job_failed(
+        self, mock_client_class, mock_monitor, mock_resume
+    ):
+        """Test error when resumed job fails."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        mock_client_class.return_value = mock_client
+
+        mock_resume.return_value = "projects/test/batchJobs/456"
+        mock_monitor.return_value = "JOB_STATE_FAILED"  # Job failed
+
+        with pytest.raises(RuntimeError, match="Resumed batch job failed"):
+            batch_process(
+                prompts=[],
+                schema=TestSchema,
+                resume_from="projects/test/batchJobs/123",
+                vertexai=True,
+            )

@@ -378,6 +378,137 @@ def download_batch_results(
     raise ValueError("Batch job does not have an associated results file (no GCS URI or File API name).")
 
 
+def get_batch_job_output_uri(
+    job_name: str,
+    client: Optional[GeminiClient] = None,
+) -> str:
+    """
+    Get the GCS output URI for a batch job's results.
+
+    This is a Vertex AI-specific function that retrieves the output location
+    (GCS URI) for a completed or partially completed batch job. Useful for
+    resuming failed/interrupted jobs.
+
+    Args:
+        job_name: Name of the batch job (e.g., "projects/.../batchJobs/123")
+        client: GeminiClient instance. If None, creates a new one.
+
+    Returns:
+        GCS URI pointing to the job's output predictions file
+        (e.g., "gs://bucket/path/predictions.jsonl")
+
+    Raises:
+        ValueError: If job has no destination or is not a Vertex AI job
+    """
+    if client is None:
+        client = GeminiClient()
+
+    batch_job = client.client.batches.get(name=job_name)
+
+    if not batch_job.dest:
+        raise ValueError(f"Job {job_name} has no destination configured")
+
+    gcs_uri = getattr(batch_job.dest, 'gcs_uri', None)
+    if not gcs_uri:
+        raise ValueError(f"Job {job_name} is not a Vertex AI job (no GCS destination)")
+
+    # Find the predictions file in the output directory
+    result_blobs = list_gcs_blobs(client, prefix=gcs_uri.replace(f"gs://{client.gcs_bucket}/", ""))
+    for blob_uri in result_blobs:
+        if 'predictions' in blob_uri.lower() or blob_uri.endswith('.jsonl'):
+            return blob_uri
+
+    # Default to predictions.jsonl path
+    return f"{gcs_uri.rstrip('/')}/predictions.jsonl"
+
+
+def resume_batch_job(
+    job_name_or_gcs_uri: str,
+    model_name: str = app_config.MODEL_CONFIG["default_model"],
+    job_display_name: Optional[str] = None,
+    generation_config: Optional[types.GenerateContentConfig] = None,
+    gcs_output_path: Optional[str] = None,
+    client: Optional[GeminiClient] = None,
+) -> str:
+    """
+    Resume a failed/interrupted Vertex AI batch job.
+
+    Creates a new batch job using the previous job's output file as input.
+    The system automatically skips completed requests (matched by 'key')
+    and only processes incomplete/failed ones. New results are merged with
+    the previous output.
+
+    This feature is only available for Vertex AI (GCS-based) batch jobs,
+    not the Gemini Developer API.
+
+    See: https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-resume
+
+    Args:
+        job_name_or_gcs_uri: Either a batch job name (e.g., "projects/.../batchJobs/123")
+            or a GCS URI to the previous job's output file
+            (e.g., "gs://bucket/path/predictions.jsonl")
+        model_name: Model to use for the resumed job
+        job_display_name: Display name for the new job. If None, auto-generated
+            as "batch-resume-{timestamp}"
+        generation_config: Generation config (should match original job for consistency)
+        gcs_output_path: Output path for resumed job results. If None, auto-generated.
+        client: GeminiClient instance. If None, creates a new one.
+
+    Returns:
+        New batch job name for monitoring (e.g., "projects/.../batchJobs/456")
+
+    Raises:
+        ValueError: If not using Vertex AI backend
+
+    Example:
+        >>> # Resume by job name
+        >>> new_job = resume_batch_job("projects/my-project/locations/us-central1/batchJobs/123")
+        >>> state = monitor_batch_job(new_job)
+        >>>
+        >>> # Resume by GCS URI
+        >>> new_job = resume_batch_job("gs://my-bucket/batch-results/batch-123/predictions.jsonl")
+    """
+    if client is None:
+        client = GeminiClient()
+
+    if not client.vertexai:
+        raise ValueError("Resume functionality is only available with Vertex AI backend")
+
+    # Determine input URI - either direct GCS path or lookup from job name
+    if job_name_or_gcs_uri.startswith("gs://"):
+        input_uri = job_name_or_gcs_uri
+    else:
+        input_uri = get_batch_job_output_uri(job_name_or_gcs_uri, client)
+
+    logger.info(f"Resuming batch job from: {input_uri}")
+
+    # Generate new job display name
+    timestamp = int(time.time())
+    if job_display_name is None:
+        job_display_name = f"batch-resume-{timestamp}"
+
+    # Set up new output path
+    bucket_name = client.ensure_gcs_bucket()
+    if gcs_output_path is None:
+        gcs_output_path = f"gs://{bucket_name}/batch-results/{job_display_name}/"
+
+    # Build config for the resumed job
+    config_kwargs = {"display_name": job_display_name, "dest": gcs_output_path}
+
+    # Create batch job using previous output as input source
+    batch_job = client.client.batches.create(
+        model=model_name,
+        src=input_uri,
+        config=types.CreateBatchJobConfig(**config_kwargs)
+    )
+
+    if not batch_job.name:
+        raise ValueError("Failed to create resumed batch job or get job name.")
+
+    logger.info(f"Created resumed batch job: {batch_job.name}")
+    return batch_job.name
+
+
 def get_inline_results(
     batch_job_name: str,
     client: Optional[GeminiClient] = None,

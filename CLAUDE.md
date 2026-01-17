@@ -27,6 +27,11 @@ job_name = create_batch_job(requests)
 monitor_batch_job(job_name)
 results_file = download_batch_results(job_name)
 parsed = parse_batch_results(results_file, schema)
+
+# Resume failed Vertex AI batch jobs
+results = batch_process(prompts=[], schema=MySchema, resume_from="projects/.../batchJobs/123", vertexai=True)
+# Or low-level:
+new_job = resume_batch_job("projects/.../batchJobs/123")  # or GCS URI
 ```
 
 ### Modules
@@ -88,6 +93,39 @@ File-based batch processing for all requests:
 - Images → File API → URI references in JSONL
 - Results → JSONL file download
 - Files: `batch_{timestamp}_requests.jsonl` / `_results.jsonl` in `.gemini_batch/` (gitignored, not auto-cleaned)
+
+### Resuming Failed Jobs (Vertex AI Only)
+
+Resume failed/interrupted batch jobs by using previous output as input. The system automatically skips completed requests and only processes incomplete ones.
+
+```python
+from gemini_batch import batch_process, resume_batch_job, monitor_batch_job
+
+# High-level API: resume and get parsed results
+results = batch_process(
+    prompts=[],  # Empty when resuming
+    schema=MySchema,
+    resume_from="projects/.../batchJobs/123",  # or GCS URI
+    vertexai=True,
+)
+
+# Low-level API: more control over the process
+new_job_name = resume_batch_job("projects/.../batchJobs/123")
+# Or resume from GCS URI directly:
+new_job_name = resume_batch_job("gs://my-bucket/batch-results/batch-123/predictions.jsonl")
+state = monitor_batch_job(new_job_name)
+```
+
+**Key Implementation Details:**
+- Uses `get_batch_job_output_uri()` to find the predictions file from a job name
+- Creates a new batch job with previous output as `src` (input source)
+- Vertex AI recognizes completed requests by `key` and skips them
+- New results merged with previous output in the new job's output location
+
+**Functions:**
+- `get_batch_job_output_uri(job_name)`: Get GCS URI for a job's output file
+- `resume_batch_job(job_name_or_gcs_uri, ...)`: Create new job from previous output
+- `batch_process(..., resume_from="...")`: High-level resume with parsing
 
 ### Batch Embeddings
 

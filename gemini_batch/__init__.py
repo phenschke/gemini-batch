@@ -29,6 +29,8 @@ from .batch import (
     download_batch_results,
     get_inline_results,
     parse_batch_results,
+    get_batch_job_output_uri,
+    resume_batch_job,
 )
 from .aggregation import aggregate_records
 from .utils import (
@@ -79,6 +81,8 @@ __all__ = [
     "download_batch_results",
     "get_inline_results",
     "parse_batch_results",
+    "get_batch_job_output_uri",
+    "resume_batch_job",
     "aggregate_records",
     "ListVoteConfig",
     "MajorityVoteResult",
@@ -130,6 +134,8 @@ def batch_process(
     part_media_resolution: Optional[str] = None,
     max_upload_workers: int = 10,
     show_progress: bool = True,
+    # Resume from failed job
+    resume_from: Optional[str] = None,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -182,6 +188,10 @@ def batch_process(
         max_upload_workers: Maximum number of concurrent file uploads (default: 10).
             Files are uploaded in parallel to improve performance with many images.
         show_progress: Whether to show a progress bar during file uploads (default: True).
+        resume_from: Job name or GCS URI to resume from. When provided, creates a new job
+            using the previous job's output as input - the system skips already-completed
+            requests and only processes incomplete/failed ones. Requires vertexai=True.
+            Example: "projects/.../batchJobs/123" or "gs://bucket/path/predictions.jsonl"
         vertexai: If True, use Vertex AI backend with GCS. If None, auto-detect from
                   GOOGLE_GENAI_USE_VERTEXAI env var. (Default: Gemini Developer API)
         project: GCP project ID (Vertex AI only). Falls back to GOOGLE_CLOUD_PROJECT env var.
@@ -242,6 +252,14 @@ def batch_process(
         >>> from gemini_batch import monitor_batch_job, parse_batch_results
         >>> state = monitor_batch_job(job_name)
         >>> results = parse_batch_results("results.jsonl", Recipe)
+        >>>
+        >>> # Resume a failed Vertex AI job
+        >>> results = batch_process(
+        ...     prompts=[],  # Empty when resuming
+        ...     schema=Recipe,
+        ...     resume_from="projects/.../batchJobs/123",  # or GCS URI
+        ...     vertexai=True,
+        ... )
     """
     import asyncio
 
@@ -252,6 +270,60 @@ def batch_process(
         location=location,
         gcs_bucket=gcs_bucket,
     )
+
+    # Handle resume mode - skip normal prompt processing and use resume_batch_job
+    if resume_from is not None:
+        if not gemini_client.vertexai:
+            raise ValueError("resume_from is only supported with Vertex AI backend (set vertexai=True)")
+
+        # Handle List[T] schema types by wrapping in a model
+        _list_item_type = None
+        _effective_schema = schema
+        if schema is not None and is_list_schema(schema):
+            args = get_args(schema)
+            _list_item_type = args[0]
+            _effective_schema = create_list_wrapper(_list_item_type)
+
+        # Build generation config for the resumed job
+        gen_config = utils.build_generation_config(
+            response_schema=_effective_schema,
+            media_resolution=media_resolution,
+            model=model,
+            **generation_kwargs
+        )
+
+        # Use resume_batch_job to create a new job from the previous output
+        job_name = batch.resume_batch_job(
+            job_name_or_gcs_uri=resume_from,
+            model_name=model,
+            job_display_name=job_display_name,
+            generation_config=gen_config,
+            client=gemini_client,
+        )
+
+        if not wait:
+            return job_name
+
+        # Wait for completion
+        final_state = batch.monitor_batch_job(job_name, poll_interval, client=gemini_client)
+
+        if final_state != 'JOB_STATE_SUCCEEDED':
+            raise RuntimeError(f"Resumed batch job failed with state: {final_state}")
+
+        # Get results
+        results_file = batch.download_batch_results(job_name, output_dir, client=gemini_client)
+        parsed = batch.parse_batch_results(results_file, _effective_schema, return_metadata=return_metadata)
+
+        # Unwrap List[T] results if we wrapped the schema
+        if _list_item_type is not None:
+            if return_metadata:
+                results, metadata = parsed
+                results = [r.items if r is not None else None for r in results]
+                parsed = (results, metadata)
+            else:
+                parsed = [r.items if r is not None else None for r in parsed]
+
+        return parsed
 
     # Phase 1: Collect files and compute content hashes for deduplication
     files_to_upload = []       # Only unique files: [(prompt_idx, part_idx, file)]
