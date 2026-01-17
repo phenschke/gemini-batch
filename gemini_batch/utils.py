@@ -564,6 +564,36 @@ def list_gcs_blobs(
     return [f"gs://{bucket_name}/{blob.name}" for blob in blobs]
 
 
+def parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
+    """
+    Parse a GCS URI into bucket name and path.
+    
+    Args:
+        gcs_uri: GCS URI (gs://bucket/path/to/object or gs://bucket/path/)
+    
+    Returns:
+        Tuple of (bucket_name, path). Path may be empty if only bucket is specified.
+    
+    Raises:
+        ValueError: If gcs_uri is not a valid GCS URI
+    """
+    if not gcs_uri.startswith("gs://"):
+        raise ValueError(f"Invalid GCS URI: {gcs_uri}. Must start with 'gs://'")
+    
+    # Remove gs:// prefix
+    uri_without_prefix = gcs_uri[5:]
+    
+    # Split into bucket and path
+    parts = uri_without_prefix.split("/", 1)
+    bucket_name = parts[0]
+    path = parts[1] if len(parts) > 1 else ""
+    
+    if not bucket_name:
+        raise ValueError(f"Invalid GCS URI: {gcs_uri}. Bucket name is empty.")
+    
+    return bucket_name, path
+
+
 def upload_file_for_batch(
     file: Union[Path, Image.Image, bytes],
     gemini_client: "GeminiClient",

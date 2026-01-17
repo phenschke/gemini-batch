@@ -20,6 +20,7 @@ from .utils import (
     upload_to_gcs,
     download_from_gcs,
     list_gcs_blobs,
+    parse_gcs_uri,
     HAS_GCS,
 )
 
@@ -344,8 +345,11 @@ def download_batch_results(
             # Vertex AI: Download from GCS
             logger.info(f"Downloading batch results from GCS: {gcs_uri}")
             
+            # Parse the GCS URI to get bucket and prefix
+            bucket_name, prefix = parse_gcs_uri(gcs_uri)
+            
             # List all files in the output directory and find the predictions file
-            result_blobs = list_gcs_blobs(client, prefix=gcs_uri.replace(f"gs://{client.gcs_bucket}/", ""))
+            result_blobs = list_gcs_blobs(client, prefix=prefix, bucket_name=bucket_name)
             
             # Look for predictions.jsonl or similar
             predictions_blob = None
@@ -412,8 +416,11 @@ def get_batch_job_output_uri(
     if not gcs_uri:
         raise ValueError(f"Job {job_name} is not a Vertex AI job (no GCS destination)")
 
+    # Parse the GCS URI to get bucket and prefix
+    bucket_name, prefix = parse_gcs_uri(gcs_uri)
+    
     # Find the predictions file in the output directory
-    result_blobs = list_gcs_blobs(client, prefix=gcs_uri.replace(f"gs://{client.gcs_bucket}/", ""))
+    result_blobs = list_gcs_blobs(client, prefix=prefix, bucket_name=bucket_name)
     for blob_uri in result_blobs:
         if 'predictions' in blob_uri.lower() or blob_uri.endswith('.jsonl'):
             return blob_uri

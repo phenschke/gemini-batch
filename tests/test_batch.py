@@ -1791,6 +1791,41 @@ class TestResumeBatchJob:
         # Should return default path
         assert result == "gs://test-bucket/batch-results/batch-456/predictions.jsonl"
 
+    @patch('gemini_batch.batch.list_gcs_blobs')
+    @patch('gemini_batch.batch.GeminiClient')
+    def test_get_batch_job_output_uri_different_bucket(self, mock_client_class, mock_list_blobs):
+        """Test that get_batch_job_output_uri works when job bucket differs from client bucket.
+        
+        This is a regression test - previously the code used client.gcs_bucket to strip
+        the bucket prefix, but the bucket might be different or client.gcs_bucket might be None.
+        """
+        mock_client = MagicMock()
+        mock_client.vertexai = True
+        # Client has different bucket (or could be None)
+        mock_client.gcs_bucket = "client-default-bucket"
+
+        mock_batch_job = MagicMock()
+        mock_dest = MagicMock()
+        # Job output is in a different bucket
+        mock_dest.gcs_uri = "gs://job-output-bucket/batch-results/batch-789/"
+        mock_batch_job.dest = mock_dest
+        mock_client.client.batches.get.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        # Mock list_gcs_blobs to return a predictions file in timestamped subfolder
+        mock_list_blobs.return_value = [
+            "gs://job-output-bucket/batch-results/batch-789/2024-01-17_12:34:56/predictions.jsonl"
+        ]
+
+        result = get_batch_job_output_uri("projects/test/batchJobs/789")
+
+        assert result == "gs://job-output-bucket/batch-results/batch-789/2024-01-17_12:34:56/predictions.jsonl"
+        # Verify list_gcs_blobs was called with the correct bucket from the job's GCS URI
+        mock_list_blobs.assert_called_once()
+        call_args = mock_list_blobs.call_args
+        assert call_args.kwargs['bucket_name'] == "job-output-bucket"
+        assert call_args.kwargs['prefix'] == "batch-results/batch-789/"
+
     @patch('gemini_batch.batch.get_batch_job_output_uri')
     @patch('gemini_batch.batch.GeminiClient')
     @patch('time.time', return_value=1700000000)

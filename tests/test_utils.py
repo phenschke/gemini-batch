@@ -1166,3 +1166,61 @@ async def test_upload_files_parallel_retries_on_network_unreachable(tmp_path):
     assert len(result) == 1
     assert (0, 0) in result
     assert attempt_count == 2  # Failed once, succeeded on second
+
+
+class TestParseGcsUri:
+    """Tests for parse_gcs_uri function."""
+
+    def test_parse_gcs_uri_with_path(self):
+        """Test parsing a GCS URI with a path."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        bucket, path = parse_gcs_uri("gs://my-bucket/path/to/file.jsonl")
+        assert bucket == "my-bucket"
+        assert path == "path/to/file.jsonl"
+
+    def test_parse_gcs_uri_with_directory(self):
+        """Test parsing a GCS URI with a directory path."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        bucket, path = parse_gcs_uri("gs://bucket/batch-results/batch-123/")
+        assert bucket == "bucket"
+        assert path == "batch-results/batch-123/"
+
+    def test_parse_gcs_uri_only_bucket(self):
+        """Test parsing a GCS URI with only bucket name."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        bucket, path = parse_gcs_uri("gs://my-bucket/")
+        assert bucket == "my-bucket"
+        assert path == ""
+
+    def test_parse_gcs_uri_bucket_no_trailing_slash(self):
+        """Test parsing a GCS URI with bucket and no trailing slash."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        bucket, path = parse_gcs_uri("gs://my-bucket")
+        assert bucket == "my-bucket"
+        assert path == ""
+
+    def test_parse_gcs_uri_complex_path(self):
+        """Test parsing a GCS URI with timestamp subfolder."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        bucket, path = parse_gcs_uri("gs://gemini-batch-gothic-venture-481719-d9/batch-results/batch-1768505366/2024-01-17_12:34:56/predictions.jsonl")
+        assert bucket == "gemini-batch-gothic-venture-481719-d9"
+        assert path == "batch-results/batch-1768505366/2024-01-17_12:34:56/predictions.jsonl"
+
+    def test_parse_gcs_uri_invalid_not_gs(self):
+        """Test parsing an invalid URI that doesn't start with gs://."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        with pytest.raises(ValueError, match="Must start with 'gs://'"):
+            parse_gcs_uri("https://storage.googleapis.com/bucket/file.json")
+
+    def test_parse_gcs_uri_invalid_empty_bucket(self):
+        """Test parsing an invalid URI with empty bucket name."""
+        from gemini_batch.utils import parse_gcs_uri
+        
+        with pytest.raises(ValueError, match="Bucket name is empty"):
+            parse_gcs_uri("gs:///path/to/file")
