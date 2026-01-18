@@ -53,11 +53,6 @@ job_name = batch_process(prompts, schema, wait=False)
 # ... check later with monitor_batch_job(job_name)
 ```
 
-**Multiple samples:** Run each prompt N times for consensus
-```python
-results = batch_process(prompts, schema, n_samples=3)
-```
-
 **Media quality control:** Adjust token usage vs quality
 ```python
 results = batch_process(prompts, schema, media_resolution="MEDIA_RESOLUTION_HIGH")

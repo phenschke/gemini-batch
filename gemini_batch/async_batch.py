@@ -23,7 +23,6 @@ from pydantic import BaseModel
 
 from . import config
 from .utils import extract_json_from_text
-from .aggregation import aggregate_records
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +286,6 @@ async def async_process(
     schema: Optional[Type[BaseModel]] = None,
     model: str = config.ASYNC_CONFIG["default_model"],
     max_concurrent: int = config.ASYNC_CONFIG["default_max_concurrent"],
-    n_samples: int = 1,
     return_metadata: bool = False,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -310,7 +308,6 @@ async def async_process(
         schema: Pydantic model for structured output. Uses JSON mode + parsing.
         model: Model name (provider-specific, e.g., "deepseek-chat")
         max_concurrent: Maximum concurrent requests (rate limiting)
-        n_samples: Number of times to process each prompt (for majority voting)
         return_metadata: If True, returns tuple of (results, metadata_list)
         base_url: API base URL (e.g., "https://api.deepseek.com")
         api_key: API key (falls back to OPENAI_API_KEY env var)
@@ -374,19 +371,18 @@ async def async_process(
     # Build all request tasks
     tasks = []
     for i, prompt_parts in enumerate(prompts):
-        for sample_idx in range(n_samples):
-            messages = build_openai_messages(prompt_parts, schema)
+        messages = build_openai_messages(prompt_parts, schema)
 
-            task = process_single_request_with_retry(
-                client=client,
-                messages=messages,
-                model=model,
-                schema=schema,
-                retry_count=retry_count,
-                retry_delay=retry_delay,
-                **gen_kwargs,
-            )
-            tasks.append(task)
+        task = process_single_request_with_retry(
+            client=client,
+            messages=messages,
+            model=model,
+            schema=schema,
+            retry_count=retry_count,
+            retry_delay=retry_delay,
+            **gen_kwargs,
+        )
+        tasks.append(task)
 
     # Execute all tasks concurrently
     results_with_metadata = await asyncio.gather(*tasks, return_exceptions=True)
@@ -404,40 +400,6 @@ async def async_process(
             result, metadata = item
             results.append(result)
             metadata_list.append(metadata)
-
-    # Handle n_samples > 1 aggregation
-    if n_samples > 1:
-        grouped_results = []
-        grouped_metadata = [] if return_metadata else None
-
-        for i in range(len(prompts)):
-            start_idx = i * n_samples
-            end_idx = (i + 1) * n_samples
-            samples = results[start_idx:end_idx]
-
-            valid_samples = [s for s in samples if s is not None]
-
-            if not valid_samples:
-                grouped_results.append(None)
-                if return_metadata:
-                    grouped_metadata.append(None)
-            elif len(valid_samples) == 1:
-                grouped_results.append(valid_samples[0])
-                if return_metadata:
-                    sample_metadata = [metadata_list[start_idx + j]
-                                      for j, s in enumerate(samples) if s is not None]
-                    grouped_metadata.append(sample_metadata[0] if sample_metadata else None)
-            else:
-                aggregated = aggregate_records(valid_samples, as_model=schema)
-                grouped_results.append(aggregated.aggregated)
-                if return_metadata:
-                    sample_metadata = [metadata_list[start_idx + j]
-                                      for j, s in enumerate(samples) if s is not None]
-                    grouped_metadata.append(sample_metadata[0] if sample_metadata else None)
-
-        if return_metadata:
-            return grouped_results, grouped_metadata
-        return grouped_results
 
     if return_metadata:
         return results, metadata_list

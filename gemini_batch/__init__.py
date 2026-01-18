@@ -124,7 +124,7 @@ def batch_process(
     schema: Optional[Type[BaseModel]] = None,
     model: str = config.MODEL_CONFIG["default_model"],
     wait: bool = True,
-    n_samples: int = 1,
+    keys: Optional[List[str]] = None,
     job_display_name: Optional[str] = None,
     poll_interval: int = config.BATCH_CONFIG["poll_interval"],
     output_dir: Optional[str] = None,
@@ -167,7 +167,12 @@ def batch_process(
         schema: Optional Pydantic BaseModel class for structured output. If None, returns raw text.
         model: Gemini model to use (default: gemini-2.5-flash)
         wait: If True, wait for completion and return results. If False, return job name.
-        n_samples: Number of times to process each prompt (for majority voting)
+        keys: Optional list of unique string identifiers for each prompt. When provided:
+            - Must have same length as prompts
+            - Each key must be unique
+            - Request key format: {i}_{key} (e.g., "0_doc_001", "1_doc_002")
+            - Useful for mapping results back to source data when recovering batch jobs
+            If None (default), request key format is just the index {i} (e.g., "0", "1").
         job_display_name: Optional display name for the batch job
         poll_interval: Seconds between job status checks (if wait=True)
         output_dir: Directory to save results (defaults to .gemini_batch/)
@@ -244,7 +249,7 @@ def batch_process(
         ...     ["Extract recipe from this image:", "scan1.jpg"],
         ...     ["What recipe is shown here?", Path("scan2.jpg"), " Focus on ingredients."]
         ... ]
-        >>> results = batch_process(prompts, Recipe, n_samples=3)
+        >>> results = batch_process(prompts, Recipe)
         >>>
         >>> # Async mode
         >>> job_name = batch_process(prompts, Recipe, wait=False)
@@ -270,6 +275,19 @@ def batch_process(
         location=location,
         gcs_bucket=gcs_bucket,
     )
+
+    # Validate keys parameter
+    if keys is not None:
+        if len(keys) != len(prompts):
+            raise ValueError(
+                f"Length of 'keys' ({len(keys)}) must match length of 'prompts' ({len(prompts)})"
+            )
+        if len(keys) != len(set(keys)):
+            raise ValueError("Custom keys must be unique")
+
+    # Validate keys not used with resume_from
+    if resume_from is not None and keys is not None:
+        raise ValueError("'keys' parameter cannot be used with 'resume_from'")
 
     # Handle resume mode - skip normal prompt processing and use resume_batch_job
     if resume_from is not None:
@@ -364,61 +382,63 @@ def batch_process(
 
     requests = []
     for i, prompt_parts in enumerate(prompts):
-        for sample_idx in range(n_samples):
-            request_key = f"prompt_{i}_sample_{sample_idx}"
+        if keys is not None:
+            request_key = f"{i}_{keys[i]}"
+        else:
+            request_key = str(i)
 
-            # Process each part in the prompt
-            content_parts = []
-            for j, part in enumerate(prompt_parts):
-                if isinstance(part, str):
-                    # Text content
-                    content_parts.append({"text": part})
-                elif isinstance(part, genai_types.Part):
-                    # Pre-built Part object - validate and convert to dict
-                    if part.inline_data is not None:
-                        raise ValueError(
-                            "Part objects with inline_data are not supported. "
-                            "Use bytes type directly for content that needs uploading."
-                        )
-                    if part.file_data is not None and not part.file_data.file_uri:
-                        raise ValueError(
-                            "Part objects with file_data must have file_uri set."
-                        )
-                    # Convert Part to dict, preserving all fields including media_resolution
-                    part_dict = part.model_dump(exclude_none=True)
-                    # Apply global part_media_resolution only if Part doesn't have its own
-                    if part_media_resolution is not None and "media_resolution" not in part_dict:
-                        if part.file_data is not None:
-                            part_dict["media_resolution"] = {"level": part_media_resolution}
-                    content_parts.append(part_dict)
-                elif isinstance(part, (Path, Image.Image, bytes)):
-                    # File content - lookup via content hash (enables deduplication)
-                    content_hash = position_to_hash[(i, j)]
-                    file_info = hash_to_uri[content_hash]
-                    file_part = {
-                        "file_data": {
-                            "file_uri": file_info["uri"],
-                            "mime_type": file_info["mime_type"]
-                        }
-                    }
-                    # Add part-level media resolution if specified (experimental, v1alpha API)
-                    if part_media_resolution is not None:
-                        file_part["media_resolution"] = {"level": part_media_resolution}
-                    content_parts.append(file_part)
-                else:
+        # Process each part in the prompt
+        content_parts = []
+        for j, part in enumerate(prompt_parts):
+            if isinstance(part, str):
+                # Text content
+                content_parts.append({"text": part})
+            elif isinstance(part, genai_types.Part):
+                # Pre-built Part object - validate and convert to dict
+                if part.inline_data is not None:
                     raise ValueError(
-                        f"Unsupported part type: {type(part)}. "
-                        f"Supported types: str, pathlib.Path, PIL.Image.Image, bytes, types.Part"
+                        "Part objects with inline_data are not supported. "
+                        "Use bytes type directly for content that needs uploading."
                     )
-
-            # Build request
-            request = {
-                "key": request_key,
-                "request": {
-                    "contents": [{"role": "user", "parts": content_parts}]
+                if part.file_data is not None and not part.file_data.file_uri:
+                    raise ValueError(
+                        "Part objects with file_data must have file_uri set."
+                    )
+                # Convert Part to dict, preserving all fields including media_resolution
+                part_dict = part.model_dump(exclude_none=True)
+                # Apply global part_media_resolution only if Part doesn't have its own
+                if part_media_resolution is not None and "media_resolution" not in part_dict:
+                    if part.file_data is not None:
+                        part_dict["media_resolution"] = {"level": part_media_resolution}
+                content_parts.append(part_dict)
+            elif isinstance(part, (Path, Image.Image, bytes)):
+                # File content - lookup via content hash (enables deduplication)
+                content_hash = position_to_hash[(i, j)]
+                file_info = hash_to_uri[content_hash]
+                file_part = {
+                    "file_data": {
+                        "file_uri": file_info["uri"],
+                        "mime_type": file_info["mime_type"]
+                    }
                 }
+                # Add part-level media resolution if specified (experimental, v1alpha API)
+                if part_media_resolution is not None:
+                    file_part["media_resolution"] = {"level": part_media_resolution}
+                content_parts.append(file_part)
+            else:
+                raise ValueError(
+                    f"Unsupported part type: {type(part)}. "
+                    f"Supported types: str, pathlib.Path, PIL.Image.Image, bytes, types.Part"
+                )
+
+        # Build request
+        request = {
+            "key": request_key,
+            "request": {
+                "contents": [{"role": "user", "parts": content_parts}]
             }
-            requests.append(request)
+        }
+        requests.append(request)
 
     # Handle List[T] schema types by wrapping in a model
     # (Google GenAI SDK doesn't support List[T] as top-level schema)
@@ -468,52 +488,5 @@ def batch_process(
             parsed = (results, metadata)
         else:
             parsed = [r.items if r is not None else None for r in parsed]
-
-    # Handle n_samples > 1: group results by prompt and aggregate
-    if n_samples > 1:
-        # If return_metadata=True, parsed is a tuple (results, metadata)
-        if return_metadata:
-            results, metadata = parsed
-        else:
-            results = parsed
-            metadata = None
-
-        # Group results by prompt index
-        grouped_results = []
-        grouped_metadata = [] if return_metadata else None
-
-        for i in range(len(prompts)):
-            # Get samples for this prompt
-            start_idx = i * n_samples
-            end_idx = (i + 1) * n_samples
-            samples = results[start_idx:end_idx]
-
-            # Filter out None values before aggregation
-            valid_samples = [s for s in samples if s is not None]
-
-            if not valid_samples:
-                # All samples failed - append None
-                grouped_results.append(None)
-                if return_metadata and metadata is not None:
-                    grouped_metadata.append(None)
-            elif len(valid_samples) == 1:
-                # Only one valid sample - use it directly (no aggregation needed)
-                grouped_results.append(valid_samples[0])
-                if return_metadata and metadata is not None:
-                    # Get metadata for the one valid sample
-                    sample_metadata = [metadata[start_idx + j] for j, s in enumerate(samples) if s is not None]
-                    grouped_metadata.append(sample_metadata[0])
-            else:
-                # Multiple valid samples - aggregate via majority voting
-                aggregated = aggregate_records(valid_samples, as_model=schema)
-                grouped_results.append(aggregated.aggregated)
-                if return_metadata and metadata is not None:
-                    # Aggregate metadata (take first valid metadata)
-                    sample_metadata = [metadata[start_idx + j] for j, s in enumerate(samples) if s is not None]
-                    grouped_metadata.append(sample_metadata[0] if sample_metadata else None)
-
-        if return_metadata:
-            return grouped_results, grouped_metadata
-        return grouped_results
 
     return parsed

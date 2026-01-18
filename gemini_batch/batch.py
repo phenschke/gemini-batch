@@ -624,20 +624,41 @@ def parse_batch_results(
         # Get key or index
         key = line.get('key', line.get('index', ''))
 
-        # Extract prompt and sample indices from key like "prompt_123_sample_0"
-        if isinstance(key, str) and 'prompt_' in key:
+        if isinstance(key, int):
+            # Inline mode uses integer index
+            return (key, 0)
+
+        if not isinstance(key, str):
+            return (float('inf'), float('inf'))
+
+        # Try new simplified format: "{i}_{sample_or_key}" (e.g., "0_0", "1_doc_001")
+        # First part before underscore is always the prompt index
+        parts = key.split('_', 1)  # Split only on first underscore
+        if len(parts) >= 1:
+            try:
+                prompt_idx = int(parts[0])
+                # Second part is sample_idx if numeric, else 0 (custom key case)
+                sample_idx = 0
+                if len(parts) > 1:
+                    try:
+                        sample_idx = int(parts[1])
+                    except ValueError:
+                        sample_idx = 0  # Custom key, not a sample index
+                return (prompt_idx, sample_idx)
+            except ValueError:
+                pass
+
+        # Fallback: legacy format "prompt_123_sample_0" (backward compatibility)
+        if 'prompt_' in key:
             try:
                 parts = key.split('_')
                 prompt_idx = int(parts[1]) if len(parts) > 1 else float('inf')
                 sample_idx = int(parts[3]) if len(parts) > 3 else 0
                 return (prompt_idx, sample_idx)
             except (ValueError, IndexError):
-                return (float('inf'), float('inf'))
-        elif isinstance(key, int):
-            # Inline mode uses integer index
-            return (key, 0)
-        else:
-            return (float('inf'), float('inf'))
+                pass
+
+        return (float('inf'), float('inf'))
 
     json_lines = sorted(json_lines, key=extract_sort_key)
 

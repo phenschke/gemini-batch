@@ -40,7 +40,7 @@ new_job = resume_batch_job("projects/.../batchJobs/123")  # or GCS URI
 - **`embedding.py`**: Batch embedding generation with task type support
 - **`async_batch.py`**: Async processing for OpenAI-compatible APIs (install with `pip install gemini-batch[async]`)
 - **`utils.py`**: `GeminiClient`, file upload, PDF conversion, config building, JSON extraction
-- **`aggregation.py`**: Majority voting for `n_samples > 1`
+- **`aggregation.py`**: Majority voting utilities
 - **`config.py`**: Model, batch, image processing, media resolution, embedding, async defaults
 
 ## Implementation Details
@@ -93,6 +93,36 @@ File-based batch processing for all requests:
 - Images → File API → URI references in JSONL
 - Results → JSONL file download
 - Files: `batch_{timestamp}_requests.jsonl` / `_results.jsonl` in `.gemini_batch/` (gitignored, not auto-cleaned)
+
+### Custom Keys for Result Mapping
+
+Use the `keys` parameter to provide custom identifiers for each prompt. This is useful for:
+- Mapping results back to source data when recovering batch jobs
+- Debugging by inspecting JSONL files with meaningful identifiers
+
+```python
+from gemini_batch import batch_process
+
+results = batch_process(
+    prompts=[
+        ["Analyze:", image_page_805_col_0],
+        ["Analyze:", image_page_805_col_1],
+        ["Analyze:", image_page_1234_full],
+    ],
+    keys=["page_805_col_0", "page_805_col_1", "page_1234_full"],
+    schema=OCRResult,
+)
+# Results aligned by index; keys visible in batch JSONL for debugging
+```
+
+**Key format:**
+- With keys: `{i}_{key}` (e.g., `0_page_805_col_0`, `1_page_805_col_1`)
+- Without keys: `{i}` (e.g., `0`, `1`, `2`)
+
+**Validation:**
+- `keys` must have same length as `prompts`
+- All keys must be unique
+- Cannot be used with `resume_from`
 
 ### Resuming Failed Jobs (Vertex AI Only)
 
@@ -268,7 +298,9 @@ pip install -e ".[dev]"                                        # Install
 
 **PDF utility**: `pdf_pages_to_images()` in `utils.py` - extracts embedded images or renders at DPI
 
-## Aggregation (`n_samples > 1`)
+## Aggregation
+
+The `aggregate_records()` function provides majority voting for combining multiple results:
 
 ```python
 from gemini_batch import aggregate_records, ListVoteConfig

@@ -2033,3 +2033,201 @@ class TestBatchProcessResumeFrom:
                 resume_from="projects/test/batchJobs/123",
                 vertexai=True,
             )
+
+
+class TestBatchProcessWithKeys:
+    """Tests for batch_process with custom keys parameter."""
+
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_batch_process_with_custom_keys(self, mock_client_class, tmp_path):
+        """Test that custom keys are included in request keys."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        prompts = [["Text prompt 1"], ["Text prompt 2"]]
+        keys = ["doc_001", "doc_002"]
+
+        try:
+            batch_process(
+                prompts=prompts,
+                keys=keys,
+                schema=TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+            )
+        except Exception:
+            pass
+
+        # Find and read the JSONL file
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) > 0, "No JSONL file was created"
+
+        jsonl_content = jsonl_files[0].read_text().strip().split('\n')
+        assert len(jsonl_content) == 2
+
+        # Verify request keys contain custom keys in format {i}_{key}
+        request1 = json.loads(jsonl_content[0])
+        request2 = json.loads(jsonl_content[1])
+
+        assert request1["key"] == "0_doc_001"
+        assert request2["key"] == "1_doc_002"
+
+    def test_batch_process_keys_length_mismatch(self):
+        """Test that ValueError is raised when keys length doesn't match prompts."""
+        from gemini_batch import batch_process
+
+        prompts = [["Text 1"], ["Text 2"], ["Text 3"]]
+        keys = ["key1", "key2"]  # Only 2 keys for 3 prompts
+
+        with pytest.raises(ValueError) as exc_info:
+            batch_process(
+                prompts=prompts,
+                keys=keys,
+                schema=TestSchema,
+                wait=False,
+            )
+
+        assert "Length of 'keys'" in str(exc_info.value)
+        assert "2" in str(exc_info.value)
+        assert "3" in str(exc_info.value)
+
+    def test_batch_process_duplicate_keys(self):
+        """Test that ValueError is raised for duplicate keys."""
+        from gemini_batch import batch_process
+
+        prompts = [["Text 1"], ["Text 2"], ["Text 3"]]
+        keys = ["key1", "key2", "key1"]  # Duplicate "key1"
+
+        with pytest.raises(ValueError) as exc_info:
+            batch_process(
+                prompts=prompts,
+                keys=keys,
+                schema=TestSchema,
+                wait=False,
+            )
+
+        assert "unique" in str(exc_info.value)
+
+    def test_batch_process_keys_with_resume_from_error(self):
+        """Test that ValueError is raised when both keys and resume_from are provided."""
+        from gemini_batch import batch_process
+
+        prompts = [["Text 1"]]
+        keys = ["key1"]
+
+        with pytest.raises(ValueError) as exc_info:
+            batch_process(
+                prompts=prompts,
+                keys=keys,
+                schema=TestSchema,
+                resume_from="gs://bucket/results.jsonl",
+                vertexai=True,
+                wait=False,
+            )
+
+        assert "'keys' parameter cannot be used with 'resume_from'" in str(exc_info.value)
+
+    def test_parse_batch_results_with_custom_keys(self, tmp_path):
+        """Test that parse_batch_results correctly sorts results with custom key suffixes."""
+        # Create results file with out-of-order results (as Batch API may return)
+        results_file = tmp_path / "results.jsonl"
+        results_data = [
+            # Results in random order
+            {
+                "key": "2_doc_C",
+                "response": {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{
+                                "text": '{"name": "Third", "value": 3}'
+                            }]
+                        }
+                    }]
+                }
+            },
+            {
+                "key": "0_doc_A",
+                "response": {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{
+                                "text": '{"name": "First", "value": 1}'
+                            }]
+                        }
+                    }]
+                }
+            },
+            {
+                "key": "1_doc_B",
+                "response": {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{
+                                "text": '{"name": "Second", "value": 2}'
+                            }]
+                        }
+                    }]
+                }
+            },
+        ]
+
+        with open(results_file, 'w') as f:
+            for line in results_data:
+                f.write(json.dumps(line) + '\n')
+
+        parsed = parse_batch_results(str(results_file), TestSchema)
+
+        # Results should be sorted by index (extracted from {i}_{key})
+        assert len(parsed) == 3
+        assert parsed[0].name == "First"
+        assert parsed[0].value == 1
+        assert parsed[1].name == "Second"
+        assert parsed[1].value == 2
+        assert parsed[2].name == "Third"
+        assert parsed[2].value == 3
+
+    @patch('gemini_batch.utils.GeminiClient')
+    def test_batch_process_without_keys(self, mock_client_class, tmp_path):
+        """Test that batch_process works as before when keys is None."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        prompts = [["Text prompt 1"], ["Text prompt 2"]]
+
+        try:
+            batch_process(
+                prompts=prompts,
+                schema=TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+            )
+        except Exception:
+            pass
+
+        # Find and read the JSONL file
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) > 0
+
+        jsonl_content = jsonl_files[0].read_text().strip().split('\n')
+        assert len(jsonl_content) == 2
+
+        # Verify request keys use default format {i}
+        request1 = json.loads(jsonl_content[0])
+        request2 = json.loads(jsonl_content[1])
+
+        assert request1["key"] == "0"
+        assert request2["key"] == "1"
