@@ -25,6 +25,47 @@ from .utils import (
 )
 
 
+def _extract_text_from_parts(parts: list) -> str:
+    """
+    Extract the actual content text from response parts.
+
+    Handles the edge case where Gemini returns multiple parts and the first part
+    is just a short "thought" marker (e.g., " thought\n"). In this case, we skip
+    the first part and return the second part's text.
+
+    Args:
+        parts: List of response parts (either genai Part objects or dicts)
+
+    Returns:
+        The text content from the appropriate part
+    """
+    if not parts:
+        raise ValueError("No parts in response")
+
+    # Get text from first part
+    first_part = parts[0]
+    if hasattr(first_part, 'text'):
+        first_text = first_part.text
+    elif isinstance(first_part, dict) and 'text' in first_part:
+        first_text = first_part['text']
+    else:
+        raise ValueError("First part has no text attribute")
+
+    # Check if this is a "thought" marker that should be skipped
+    # Conditions: multiple parts, first part is short (<20 chars), and contains "thought"
+    if len(parts) > 1 and len(first_text) < 20 and 'thought' in first_text.lower():
+        second_part = parts[1]
+        if hasattr(second_part, 'text'):
+            return second_part.text
+        elif isinstance(second_part, dict) and 'text' in second_part:
+            return second_part['text']
+        else:
+            # Fall back to first part if second has no text
+            return first_text
+
+    return first_text
+
+
 def extract_timestamp_from_display_name(display_name: str) -> Optional[int]:
     """
     Extract timestamp from display_name like 'batch-1700000000'.
@@ -700,7 +741,7 @@ def parse_batch_results(
             response = line['response']
             if hasattr(response, 'candidates'):
                 # genai response object
-                llm_output = response.candidates[0].content.parts[0].text
+                llm_output = _extract_text_from_parts(response.candidates[0].content.parts)
                 # Extract metadata if requested
                 if return_metadata:
                     metadata = {}
@@ -717,7 +758,7 @@ def parse_batch_results(
                     metadata_list.append(metadata)
             elif isinstance(response, dict):
                 # dict format
-                llm_output = response['candidates'][0]['content']['parts'][0]['text']
+                llm_output = _extract_text_from_parts(response['candidates'][0]['content']['parts'])
                 # Extract metadata if requested
                 if return_metadata:
                     metadata = {}

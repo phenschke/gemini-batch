@@ -15,12 +15,100 @@ from gemini_batch.batch import (
     get_batch_job_output_uri,
     resume_batch_job,
     _is_retryable_network_error,
+    _extract_text_from_parts,
 )
 
 
 class TestSchema(BaseModel):
     name: str
     value: int
+
+
+class TestExtractTextFromParts:
+    """Tests for _extract_text_from_parts helper function."""
+
+    def test_single_part_dict(self):
+        """Test extracting text from a single dict part."""
+        parts = [{"text": "Hello world"}]
+        assert _extract_text_from_parts(parts) == "Hello world"
+
+    def test_single_part_object(self):
+        """Test extracting text from a single object part with text attribute."""
+        part = Mock()
+        part.text = "Hello world"
+        parts = [part]
+        assert _extract_text_from_parts(parts) == "Hello world"
+
+    def test_multiple_parts_no_thought(self):
+        """Test that first part is used when it's not a thought marker."""
+        parts = [
+            {"text": "This is the main content"},
+            {"text": "This is secondary content"}
+        ]
+        assert _extract_text_from_parts(parts) == "This is the main content"
+
+    def test_thought_marker_skipped_dict(self):
+        """Test that 'thought' marker part is skipped (dict format)."""
+        parts = [
+            {"text": " thought\n"},
+            {"text": "Actual content here"}
+        ]
+        assert _extract_text_from_parts(parts) == "Actual content here"
+
+    def test_thought_marker_skipped_object(self):
+        """Test that 'thought' marker part is skipped (object format)."""
+        part1 = Mock()
+        part1.text = " thought\n"
+        part2 = Mock()
+        part2.text = "Actual content here"
+        parts = [part1, part2]
+        assert _extract_text_from_parts(parts) == "Actual content here"
+
+    def test_thought_marker_case_insensitive(self):
+        """Test that thought detection is case insensitive."""
+        parts = [
+            {"text": " THOUGHT\n"},
+            {"text": "Actual content here"}
+        ]
+        assert _extract_text_from_parts(parts) == "Actual content here"
+
+    def test_thought_in_long_text_not_skipped(self):
+        """Test that 'thought' in text longer than 20 chars is not skipped."""
+        parts = [
+            {"text": "This is a longer text with thought in it"},
+            {"text": "Secondary content"}
+        ]
+        assert _extract_text_from_parts(parts) == "This is a longer text with thought in it"
+
+    def test_short_text_without_thought_not_skipped(self):
+        """Test that short text without 'thought' is not skipped."""
+        parts = [
+            {"text": "OK\n"},
+            {"text": "Secondary content"}
+        ]
+        assert _extract_text_from_parts(parts) == "OK\n"
+
+    def test_empty_parts_raises(self):
+        """Test that empty parts list raises ValueError."""
+        with pytest.raises(ValueError, match="No parts in response"):
+            _extract_text_from_parts([])
+
+    def test_no_text_attribute_raises(self):
+        """Test that part without text attribute raises ValueError."""
+        part = Mock(spec=[])  # No text attribute
+        parts = [part]
+        with pytest.raises(ValueError, match="First part has no text attribute"):
+            _extract_text_from_parts(parts)
+
+    def test_second_part_no_text_falls_back(self):
+        """Test that if second part has no text, falls back to first part."""
+        part2 = Mock(spec=[])  # No text attribute
+        parts = [
+            {"text": " thought\n"},
+            part2
+        ]
+        # Should fall back to first part since second has no text
+        assert _extract_text_from_parts(parts) == " thought\n"
 
 
 @patch('gemini_batch.batch.GeminiClient')
