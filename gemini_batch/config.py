@@ -76,6 +76,6 @@ VERTEXAI_CONFIG = {
     "location": "global",  # GCP region (falls back to GOOGLE_CLOUD_LOCATION env var)
     "gcs_bucket": None,  # GCS bucket name for file storage (auto-created if doesn't exist)
     "auto_create_bucket": True,  # Whether to auto-create GCS bucket if it doesn't exist
-    "bucket_location": "US",  # Location for auto-created buckets
+    "bucket_location": "europe-west4",  # Location for auto-created buckets
     "upload_timeout": 300,  # Timeout in seconds for GCS uploads (default: 5 minutes)
 }
