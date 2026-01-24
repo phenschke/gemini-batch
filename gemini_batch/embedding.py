@@ -338,6 +338,7 @@ async def async_embed(
     title: Optional[str] = None,
     return_metadata: bool = False,
     max_concurrent: int = 10,
+    rpm: Optional[int] = None,
     batch_size: int = 250,  # API limit is 250 texts per request
     show_progress: bool = True,
     # Vertex AI parameters
@@ -367,6 +368,7 @@ async def async_embed(
         title: Optional title describing the content
         return_metadata: If True, returns tuple of (embeddings, metadata_list)
         max_concurrent: Maximum concurrent API requests
+        rpm: Maximum requests per minute. If None, no rate limiting beyond max_concurrent.
         batch_size: Max texts per API request (default 250, API maximum)
         show_progress: If True, display progress bar (default: True)
         vertexai: If True, use Vertex AI backend. If None, auto-detect from env.
@@ -421,11 +423,35 @@ async def async_embed(
     # Split texts into batches (API limit: 250 texts per request)
     text_batches = [texts[i:i + batch_size] for i in range(0, len(texts), batch_size)]
 
-    # Semaphore for rate limiting
+    # Semaphore for concurrency limiting
     semaphore = asyncio.Semaphore(max_concurrent)
+
+    # Rate limiter state for rpm (interval-based to prevent bursting)
+    last_request_time: List[float] = [0.0]  # List for mutability in closure
+    rate_lock = asyncio.Lock()
+
+    async def wait_for_rate_limit() -> None:
+        """Wait if necessary to stay within rpm limit."""
+        if rpm is None:
+            return
+
+        min_interval = 60.0 / rpm  # Minimum seconds between requests
+
+        async with rate_lock:
+            now = time.time()
+            elapsed = now - last_request_time[0]
+
+            if elapsed < min_interval:
+                wait_time = min_interval - elapsed
+                logger.debug(f"Rate limit: waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+
+            # Record this request time
+            last_request_time[0] = time.time()
 
     async def process_batch(batch: List[str]) -> Tuple[List[List[float]], List[Dict]]:
         """Process a single batch of texts."""
+        await wait_for_rate_limit()
         async with semaphore:
             # Use native async API via client.aio
             response = await client.client.aio.models.embed_content(
@@ -508,6 +534,7 @@ def embed(
     title: Optional[str] = None,
     return_metadata: bool = False,
     max_concurrent: int = 10,
+    rpm: Optional[int] = None,
     batch_size: int = 250,
     show_progress: bool = True,
     # Vertex AI parameters
@@ -552,6 +579,7 @@ def embed(
         title=title,
         return_metadata=return_metadata,
         max_concurrent=max_concurrent,
+        rpm=rpm,
         batch_size=batch_size,
         show_progress=show_progress,
         vertexai=vertexai,

@@ -1,6 +1,8 @@
 """Tests for batch embedding functionality."""
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+import asyncio
+import time
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 import json
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from gemini_batch.embedding import (
     download_embedding_results,
     parse_embedding_results,
     batch_embed,
+    async_embed,
 )
 from gemini_batch import config
 
@@ -397,3 +400,84 @@ class TestBatchEmbed:
         assert embeddings[0] == [0.1, 0.2]
         assert len(metadata) == 1
         assert metadata[0]["usageMetadata"]["totalTokenCount"] == 10
+
+
+class TestAsyncEmbed:
+    """Tests for async_embed and embed functions."""
+
+    @pytest.mark.asyncio
+    @patch('gemini_batch.embedding.GeminiClient')
+    async def test_rpm_rate_limiting(self, mock_client_class):
+        """Test that rpm parameter limits requests per minute."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        # Create async mock for embed_content
+        mock_response = MagicMock()
+        mock_embedding = MagicMock()
+        mock_embedding.values = [0.1, 0.2, 0.3]
+        mock_embedding.statistics = None
+        mock_response.embeddings = [mock_embedding]
+
+        mock_aio = MagicMock()
+        mock_models = MagicMock()
+        mock_models.embed_content = AsyncMock(return_value=mock_response)
+        mock_aio.models = mock_models
+        mock_client.client.aio = mock_aio
+
+        mock_client_class.return_value = mock_client
+
+        # With rpm=60 (1 per second), 3 requests should take at least 2 seconds
+        # (first request immediate, 2nd waits ~1s, 3rd waits ~1s)
+        texts = ["text1", "text2", "text3"]
+
+        start = time.time()
+        embeddings = await async_embed(
+            texts,
+            rpm=60,  # 1 request per second
+            batch_size=1,  # Force 1 text per batch = 3 requests
+            max_concurrent=10,
+            show_progress=False,
+        )
+        elapsed = time.time() - start
+
+        assert len(embeddings) == 3
+        # Should take at least 2 seconds due to rate limiting
+        assert elapsed >= 2.0, f"Expected >= 2s with rpm=60, got {elapsed:.2f}s"
+
+    @pytest.mark.asyncio
+    @patch('gemini_batch.embedding.GeminiClient')
+    async def test_no_rpm_no_delay(self, mock_client_class):
+        """Test that without rpm, requests run without rate limiting delay."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+
+        mock_response = MagicMock()
+        mock_embedding = MagicMock()
+        mock_embedding.values = [0.1, 0.2, 0.3]
+        mock_embedding.statistics = None
+        mock_response.embeddings = [mock_embedding]
+
+        mock_aio = MagicMock()
+        mock_models = MagicMock()
+        mock_models.embed_content = AsyncMock(return_value=mock_response)
+        mock_aio.models = mock_models
+        mock_client.client.aio = mock_aio
+
+        mock_client_class.return_value = mock_client
+
+        texts = ["text1", "text2", "text3"]
+
+        start = time.time()
+        embeddings = await async_embed(
+            texts,
+            rpm=None,  # No rate limiting
+            batch_size=1,
+            max_concurrent=10,
+            show_progress=False,
+        )
+        elapsed = time.time() - start
+
+        assert len(embeddings) == 3
+        # Without rpm, should complete quickly (< 1s)
+        assert elapsed < 1.0, f"Expected < 1s without rpm, got {elapsed:.2f}s"

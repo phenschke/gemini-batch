@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gemini-batch"
-version = "0.9.3"
+version = "0.9.4"
 description = "Simple batch processing library for Google Gemini API with structured output"
 readme = "README.md"
 license = {text = "MIT"}
