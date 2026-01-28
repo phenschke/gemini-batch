@@ -62,7 +62,7 @@ except ImportError:
     async_process = None
     process = None
 
-__version__ = "0.9.3"
+__version__ = "0.9.5"
 __all__ = [
     "batch_process",
     # Batch embeddings
