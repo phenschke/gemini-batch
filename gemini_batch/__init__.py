@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from google.genai import types as genai_types
 import hashlib
 import io
+import time
+import json
 
 from . import config
 from . import batch
@@ -359,18 +361,35 @@ def batch_process(
                     hash_to_position[content_hash] = (i, j)
                     files_to_upload.append((i, j, part))
 
-    # Phase 2: Upload all files in parallel
+    # Phase 2: Upload new files in chunks to prevent memory spikes
+    # For many images (e.g. 3000), holding all upload tasks in memory causes OOM
+    # even if concurrency is limited. We must chunk the task creation itself.
     uploaded_files: Dict[tuple, Dict[str, str]] = {}
+    
+    CHUNK_SIZE = 100
     if files_to_upload:
-        uploaded_files = asyncio.run(
-            utils.upload_files_parallel(
-                files_to_upload,
-                gemini_client,
-                max_concurrent=max_upload_workers,
-                show_progress=show_progress,
+        total_files = len(files_to_upload)
+        for i in range(0, total_files, CHUNK_SIZE):
+            chunk = files_to_upload[i : i + CHUNK_SIZE]
+            
+            # Upload this chunk
+            chunk_results = asyncio.run(
+                utils.upload_files_parallel(
+                    chunk,
+                    gemini_client,
+                    max_concurrent=max_upload_workers,
+                    show_progress=show_progress,
+                )
             )
-        )
-        # Clear file references from memory - no longer needed after upload
+            
+            # Accumulate results
+            uploaded_files.update(chunk_results)
+            
+            # Explicitly clear chunk memory
+            del chunk
+            del chunk_results
+
+        # Clear original list
         del files_to_upload
 
     # Phase 3: Build requests from prompts using uploaded file URIs
