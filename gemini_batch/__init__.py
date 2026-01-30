@@ -348,85 +348,76 @@ def batch_process(
 
         return parsed
 
-    # Phase 1: Collect files and deduplicate
-    # Strategy: Path objects deduplicate by resolved path string (fast identity check).
-    # bytes/Image objects deduplicate by content hash (slower, but necessary).
-    files_to_upload = []       # Only unique files: [(prompt_idx, part_idx, file)]
-    position_to_key = {}       # All positions: {(i, j): dedup_key}
-    key_to_position = {}       # First occurrence: {dedup_key: (prompt_idx, part_idx)}
-
-    # Cache for Path -> resolved string (avoid repeated resolve() calls)
-    path_key_cache: Dict[Path, str] = {}
-
-    logger.info("Deduplicating files...")
-
+    # Phase 1: Collect unique files (fast!)
+    # Paths: deduplicate by resolved path string using set membership (O(1))
+    # bytes/Image: deduplicate by content hash (still need to track positions)
+    logger.info("Collecting unique files...")
+    
+    path_set: set[str] = set()     # resolved path strings for O(1) dedup
+    unique_paths: list[Path] = []  # ordered list of unique Paths
+    
+    # For bytes/Image, we still need position tracking (rare case)
+    content_hashes: Dict[str, Dict[str, str]] = {}  # hash -> uri_info (after upload)
+    content_files: list[tuple[int, int, Any, str]] = []  # (i, j, file, hash)
+    
     for i, prompt_parts in enumerate(prompts):
         for j, part in enumerate(prompt_parts):
             if isinstance(part, Path):
-                # Fast path: deduplicate by resolved path string
-                if part in path_key_cache:
-                    dedup_key = path_key_cache[part]
-                else:
-                    dedup_key = f"path:{part.resolve()}"
-                    path_key_cache[part] = dedup_key
-                position_to_key[(i, j)] = dedup_key
-
-                if dedup_key not in key_to_position:
-                    key_to_position[dedup_key] = (i, j)
-                    files_to_upload.append((i, j, part))
-
+                path_key = str(part.resolve())
+                if path_key not in path_set:
+                    path_set.add(path_key)
+                    unique_paths.append(part)
             elif isinstance(part, (Image.Image, bytes)):
-                # Slow path: content hash for identity-less types
                 content_hash = _compute_content_hash(part)
-                dedup_key = f"hash:{content_hash}"
-                position_to_key[(i, j)] = dedup_key
-
-                if dedup_key not in key_to_position:
-                    key_to_position[dedup_key] = (i, j)
-                    files_to_upload.append((i, j, part))
-
-    # Phase 2: Upload new files in chunks to prevent memory spikes
-    # For many images (e.g. 3000), holding all upload tasks in memory causes OOM
-    # even if concurrency is limited. We must chunk the task creation itself.
-    uploaded_files: Dict[tuple, Dict[str, str]] = {}
+                if content_hash not in content_hashes:
+                    content_hashes[content_hash] = None  # Placeholder, filled after upload
+                    content_files.append((i, j, part, content_hash))
     
-    CHUNK_SIZE = 100
-    if files_to_upload:
-        total_files = len(files_to_upload)
-        total_chunks = (total_files + CHUNK_SIZE - 1) // CHUNK_SIZE
-        logger.info(f"Uploading {total_files} files in {total_chunks} chunks...")
-        for i in range(0, total_files, CHUNK_SIZE):
-            chunk_num = (i // CHUNK_SIZE) + 1
-            logger.info(f"Uploading chunk {chunk_num}/{total_chunks}...")
-            chunk = files_to_upload[i : i + CHUNK_SIZE]
-            
-            # Upload this chunk
-            chunk_results = asyncio.run(
-                utils.upload_files_parallel(
-                    chunk,
-                    gemini_client,
-                    max_concurrent=max_upload_workers,
-                    show_progress=show_progress,
-                )
-            )
-            
-            # Accumulate results
-            uploaded_files.update(chunk_results)
-            
-            # Explicitly clear chunk memory
-            del chunk
-            del chunk_results
+    logger.info(f"Found {len(unique_paths)} unique paths, {len(content_files)} content-based files")
 
-        # Clear original list
-        del files_to_upload
+    # Phase 2: Upload files
+    # For Paths: upload directly, store result in path_str -> uri_info mapping
+    # For bytes/Image: upload and store in content_hash -> uri_info mapping
+    path_to_uri: Dict[str, Dict[str, str]] = {}  # resolved path str -> uri_info
+    
+    if unique_paths:
+        # Convert Paths to upload format: (idx, 0, path) - idx only for progress tracking
+        path_upload_list = [(idx, 0, p) for idx, p in enumerate(unique_paths)]
+        
+        logger.info(f"Uploading {len(unique_paths)} unique files...")
+        path_results = asyncio.run(
+            utils.upload_files_parallel(
+                path_upload_list,
+                gemini_client,
+                max_concurrent=max_upload_workers,
+                show_progress=show_progress,
+            )
+        )
+        
+        # Build path_str -> uri_info mapping
+        for idx, path in enumerate(unique_paths):
+            path_key = str(path.resolve())
+            path_to_uri[path_key] = path_results[(idx, 0)]
+    
+    if content_files:
+        # Upload content-based files (bytes/Image)
+        content_upload_list = [(i, j, f) for i, j, f, _ in content_files]
+        
+        logger.info(f"Uploading {len(content_files)} content-based files...")
+        content_results = asyncio.run(
+            utils.upload_files_parallel(
+                content_upload_list,
+                gemini_client,
+                max_concurrent=max_upload_workers,
+                show_progress=show_progress,
+            )
+        )
+        
+        # Build content_hash -> uri_info mapping
+        for i, j, _, content_hash in content_files:
+            content_hashes[content_hash] = content_results[(i, j)]
 
     # Phase 3: Build requests from prompts using uploaded file URIs
-    # Build dedup_key -> URI mapping for lookup
-    key_to_uri = {
-        position_to_key[pos]: uri_info
-        for pos, uri_info in uploaded_files.items()
-    }
-
     requests = []
     for i, prompt_parts in enumerate(prompts):
         if keys is not None:
@@ -458,10 +449,10 @@ def batch_process(
                     if part.file_data is not None:
                         part_dict["media_resolution"] = {"level": part_media_resolution}
                 content_parts.append(part_dict)
-            elif isinstance(part, (Path, Image.Image, bytes)):
-                # File content - lookup via dedup key
-                dedup_key = position_to_key[(i, j)]
-                file_info = key_to_uri[dedup_key]
+            elif isinstance(part, Path):
+                # Path: lookup by resolved path string (O(1))
+                path_key = str(part.resolve())
+                file_info = path_to_uri[path_key]
                 file_part = {
                     "file_data": {
                         "file_uri": file_info["uri"],
@@ -469,6 +460,19 @@ def batch_process(
                     }
                 }
                 # Add part-level media resolution if specified (experimental, v1alpha API)
+                if part_media_resolution is not None:
+                    file_part["media_resolution"] = {"level": part_media_resolution}
+                content_parts.append(file_part)
+            elif isinstance(part, (Image.Image, bytes)):
+                # bytes/Image: lookup by content hash
+                content_hash = _compute_content_hash(part)
+                file_info = content_hashes[content_hash]
+                file_part = {
+                    "file_data": {
+                        "file_uri": file_info["uri"],
+                        "mime_type": file_info["mime_type"]
+                    }
+                }
                 if part_media_resolution is not None:
                     file_part["media_resolution"] = {"level": part_media_resolution}
                 content_parts.append(file_part)
