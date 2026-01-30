@@ -348,22 +348,41 @@ def batch_process(
 
         return parsed
 
-    # Phase 1: Collect files and compute content hashes for deduplication
+    # Phase 1: Collect files and deduplicate
+    # Strategy: Path objects deduplicate by resolved path string (fast identity check).
+    # bytes/Image objects deduplicate by content hash (slower, but necessary).
     files_to_upload = []       # Only unique files: [(prompt_idx, part_idx, file)]
-    position_to_hash = {}      # All positions: {(i, j): content_hash}
-    hash_to_position = {}      # First occurrence: {content_hash: (prompt_idx, part_idx)}
+    position_to_key = {}       # All positions: {(i, j): dedup_key}
+    key_to_position = {}       # First occurrence: {dedup_key: (prompt_idx, part_idx)}
 
-    logger.info("Hashing images for deduplication...")
+    # Cache for Path -> resolved string (avoid repeated resolve() calls)
+    path_key_cache: Dict[Path, str] = {}
+
+    logger.info("Deduplicating files...")
 
     for i, prompt_parts in enumerate(prompts):
         for j, part in enumerate(prompt_parts):
-            if isinstance(part, (Path, Image.Image, bytes)):
-                content_hash = _compute_content_hash(part)
-                position_to_hash[(i, j)] = content_hash
+            if isinstance(part, Path):
+                # Fast path: deduplicate by resolved path string
+                if part in path_key_cache:
+                    dedup_key = path_key_cache[part]
+                else:
+                    dedup_key = f"path:{part.resolve()}"
+                    path_key_cache[part] = dedup_key
+                position_to_key[(i, j)] = dedup_key
 
-                if content_hash not in hash_to_position:
-                    # First occurrence - mark for upload
-                    hash_to_position[content_hash] = (i, j)
+                if dedup_key not in key_to_position:
+                    key_to_position[dedup_key] = (i, j)
+                    files_to_upload.append((i, j, part))
+
+            elif isinstance(part, (Image.Image, bytes)):
+                # Slow path: content hash for identity-less types
+                content_hash = _compute_content_hash(part)
+                dedup_key = f"hash:{content_hash}"
+                position_to_key[(i, j)] = dedup_key
+
+                if dedup_key not in key_to_position:
+                    key_to_position[dedup_key] = (i, j)
                     files_to_upload.append((i, j, part))
 
     # Phase 2: Upload new files in chunks to prevent memory spikes
@@ -402,9 +421,9 @@ def batch_process(
         del files_to_upload
 
     # Phase 3: Build requests from prompts using uploaded file URIs
-    # Build hash -> URI mapping for deduplication lookup
-    hash_to_uri = {
-        position_to_hash[pos]: uri_info
+    # Build dedup_key -> URI mapping for lookup
+    key_to_uri = {
+        position_to_key[pos]: uri_info
         for pos, uri_info in uploaded_files.items()
     }
 
@@ -440,9 +459,9 @@ def batch_process(
                         part_dict["media_resolution"] = {"level": part_media_resolution}
                 content_parts.append(part_dict)
             elif isinstance(part, (Path, Image.Image, bytes)):
-                # File content - lookup via content hash (enables deduplication)
-                content_hash = position_to_hash[(i, j)]
-                file_info = hash_to_uri[content_hash]
+                # File content - lookup via dedup key
+                dedup_key = position_to_key[(i, j)]
+                file_info = key_to_uri[dedup_key]
                 file_part = {
                     "file_data": {
                         "file_uri": file_info["uri"],
