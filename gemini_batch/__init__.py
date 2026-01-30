@@ -20,6 +20,9 @@ import hashlib
 import io
 import time
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from . import config
 from . import batch
@@ -350,6 +353,8 @@ def batch_process(
     position_to_hash = {}      # All positions: {(i, j): content_hash}
     hash_to_position = {}      # First occurrence: {content_hash: (prompt_idx, part_idx)}
 
+    logger.info("Hashing images for deduplication...")
+
     for i, prompt_parts in enumerate(prompts):
         for j, part in enumerate(prompt_parts):
             if isinstance(part, (Path, Image.Image, bytes)):
@@ -369,7 +374,11 @@ def batch_process(
     CHUNK_SIZE = 100
     if files_to_upload:
         total_files = len(files_to_upload)
+        total_chunks = (total_files + CHUNK_SIZE - 1) // CHUNK_SIZE
+        logger.info(f"Uploading {total_files} files in {total_chunks} chunks...")
         for i in range(0, total_files, CHUNK_SIZE):
+            chunk_num = (i // CHUNK_SIZE) + 1
+            logger.info(f"Uploading chunk {chunk_num}/{total_chunks}...")
             chunk = files_to_upload[i : i + CHUNK_SIZE]
             
             # Upload this chunk
