@@ -703,6 +703,19 @@ def parse_batch_results(
 
     json_lines = sorted(json_lines, key=extract_sort_key)
 
+    # Deduplicate: Vertex AI Batch API sometimes returns duplicate results
+    seen_keys = set()
+    deduped = []
+    for line in json_lines:
+        sk = extract_sort_key(line)
+        if sk not in seen_keys:
+            seen_keys.add(sk)
+            deduped.append(line)
+        else:
+            dup_id = line.get('key', 'unknown') if line else 'None'
+            logger.warning(f"Dropping duplicate batch result for key: {dup_id}")
+    json_lines = deduped
+
     parsed_results: List[Union[BaseModel, str, None]] = []
     metadata_list: List[Union[Dict[str, Any], None]] = []
     success_count = 0
