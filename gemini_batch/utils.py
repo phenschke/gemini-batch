@@ -5,6 +5,7 @@ Core utilities for gemini-batch: client management, image processing, and utilit
 import os
 import io
 import re
+import hashlib
 import mimetypes
 import tempfile
 import uuid
@@ -95,6 +96,28 @@ def create_list_wrapper(item_type: Type[BaseModel]) -> Type[BaseModel]:
     """
     from pydantic import create_model
     return create_model('ListWrapper', items=(List[item_type], ...))
+
+
+def _compute_content_hash(file: Union[Path, Image.Image, bytes]) -> str:
+    """Compute hash for deduplication (first 64KB + size for speed)."""
+    CHUNK_SIZE = 65536  # 64KB
+
+    if isinstance(file, Path):
+        size = file.stat().st_size
+        with open(file, 'rb') as f:
+            chunk = f.read(CHUNK_SIZE)
+        return hashlib.sha256(chunk + str(size).encode()).hexdigest()
+
+    elif isinstance(file, Image.Image):
+        # Use raw pixel bytes - much faster than PNG encoding
+        data = file.tobytes()
+        mode_size = f"{file.mode}_{file.size}".encode()
+        return hashlib.sha256(data[:CHUNK_SIZE] + mode_size).hexdigest()
+
+    elif isinstance(file, bytes):
+        return hashlib.sha256(file[:CHUNK_SIZE] + str(len(file)).encode()).hexdigest()
+
+    raise ValueError(f"Unsupported file type: {type(file)}")
 
 
 # API key configuration
@@ -1011,6 +1034,93 @@ async def upload_files_parallel(
 
     # Convert list of tuples to dictionary
     return dict(results)
+
+
+async def collect_and_upload_files(
+    prompts: List[List[Any]],
+    gemini_client: "GeminiClient",
+    max_upload_workers: int = 10,
+    show_progress: bool = True,
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
+    """
+    Collect unique files from prompts and upload them in parallel.
+
+    Handles deduplication:
+    - Paths: deduplicated by resolved path string (O(1) set lookup)
+    - bytes/Image: deduplicated by content hash
+
+    Args:
+        prompts: List of prompts, each a list of parts (str, Path, Image, bytes, Part)
+        gemini_client: GeminiClient instance for uploads
+        max_upload_workers: Maximum concurrent uploads
+        show_progress: Whether to show progress bar
+
+    Returns:
+        Tuple of (path_to_uri, content_hashes) where:
+        - path_to_uri: Dict mapping resolved path strings to {"uri": ..., "mime_type": ...}
+        - content_hashes: Dict mapping content hashes to {"uri": ..., "mime_type": ...}
+    """
+    # Phase 1: Collect unique files
+    path_set: set = set()
+    unique_paths: list = []
+    resolve_cache: dict = {}
+
+    content_hashes: Dict[str, Dict[str, str]] = {}
+    content_files: list = []  # (i, j, file, hash)
+
+    for i, prompt_parts in enumerate(prompts):
+        for j, part in enumerate(prompt_parts):
+            if isinstance(part, Path):
+                part_id = id(part)
+                if part_id in resolve_cache:
+                    path_key = resolve_cache[part_id]
+                else:
+                    path_key = str(part.resolve())
+                    resolve_cache[part_id] = path_key
+                if path_key not in path_set:
+                    path_set.add(path_key)
+                    unique_paths.append(part)
+            elif isinstance(part, (Image.Image, bytes)):
+                content_hash = _compute_content_hash(part)
+                if content_hash not in content_hashes:
+                    content_hashes[content_hash] = None  # Placeholder
+                    content_files.append((i, j, part, content_hash))
+
+    logger.info(f"Found {len(unique_paths)} unique paths, {len(content_files)} content-based files")
+
+    # Phase 2: Upload files
+    path_to_uri: Dict[str, Dict[str, str]] = {}
+
+    if unique_paths:
+        path_upload_list = [(idx, 0, p) for idx, p in enumerate(unique_paths)]
+
+        logger.info(f"Uploading {len(unique_paths)} unique files...")
+        path_results = await upload_files_parallel(
+            path_upload_list,
+            gemini_client,
+            max_concurrent=max_upload_workers,
+            show_progress=show_progress,
+        )
+
+        for idx, path in enumerate(unique_paths):
+            path_key = str(path.resolve())
+            path_to_uri[path_key] = path_results[(idx, 0)]
+
+    if content_files:
+        content_upload_list = [(i, j, f) for i, j, f, _ in content_files]
+
+        logger.info(f"Uploading {len(content_files)} content-based files...")
+        content_results = await upload_files_parallel(
+            content_upload_list,
+            gemini_client,
+            max_concurrent=max_upload_workers,
+            show_progress=show_progress,
+        )
+
+        for i, j, _, content_hash in content_files:
+            content_hashes[content_hash] = content_results[(i, j)]
+
+    return path_to_uri, content_hashes
 
 
 def _convert_page_to_image(page: fitz.Page, doc: fitz.Document, dpi: int) -> Image.Image:

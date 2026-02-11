@@ -40,13 +40,10 @@ MEDIA_RESOLUTION_OPTIONS = {
     "HIGH": "MEDIA_RESOLUTION_HIGH",     # Higher token usage, more detail, increased latency/cost
 }
 
-# --- Async Processing Settings ---
-# Configuration for async_process() using OpenAI-compatible APIs
-# Environment variable fallback: OPENAI_API_KEY
-ASYNC_CONFIG = {
-    "default_model": "deepseek-chat",
-    "default_max_concurrent": 10,  # Maximum concurrent requests (rate limiting)
-    "default_timeout": 60.0,  # Request timeout in seconds
+# --- Direct API Processing Settings ---
+# Configuration for process()/async_process() using direct Gemini API calls
+DIRECT_CONFIG = {
+    "default_max_concurrent": 10,  # Maximum concurrent requests
     "default_retry_count": 3,  # Number of retries on failure
     "default_retry_delay": 1.0,  # Initial delay between retries (exponential backoff)
 }

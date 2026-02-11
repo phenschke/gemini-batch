@@ -17,10 +17,10 @@ results = batch_process(prompts, schema, wait=True)
 # Batch Embeddings (50% cost savings)
 embeddings = batch_embed(texts, task_type="RETRIEVAL_DOCUMENT")
 
-# OpenAI-compatible APIs (DeepSeek, Together, Groq, etc.)
-results = await async_process(prompts, schema, model="deepseek-chat", base_url="https://api.deepseek.com")
+# Direct Gemini API (immediate results, full cost)
+results = await async_process(prompts, schema, max_concurrent=10)
 # Or sync wrapper:
-results = process(prompts, schema, model="deepseek-chat", base_url="https://api.deepseek.com")
+results = process(prompts, schema)
 
 # Low-level batch control
 job_name = create_batch_job(requests)
@@ -38,10 +38,10 @@ new_job = resume_batch_job("projects/.../batchJobs/123")  # or GCS URI
 
 - **`batch.py`**: Job creation, monitoring, result download/parsing
 - **`embedding.py`**: Batch embedding generation with task type support
-- **`async_batch.py`**: Async processing for OpenAI-compatible APIs (install with `pip install gemini-batch[async]`)
-- **`utils.py`**: `GeminiClient`, file upload, PDF conversion, config building, JSON extraction
+- **`direct.py`**: Direct Gemini API processing (`process`/`async_process`) using `client.aio.models.generate_content()`
+- **`utils.py`**: `GeminiClient`, file upload/dedup, PDF conversion, config building, JSON extraction
 - **`aggregation.py`**: Majority voting utilities
-- **`config.py`**: Model, batch, image processing, media resolution, embedding, async defaults
+- **`config.py`**: Model, batch, image processing, media resolution, embedding, direct API defaults
 
 ## Implementation Details
 
@@ -185,33 +185,44 @@ embeddings = batch_embed(
 - Result parsing extracts `response["embedding"]["values"]`
 - Model: `gemini-embedding-001` (default), produces 3072-dimensional vectors
 
-### Async Processing (OpenAI-compatible APIs)
+### Direct API Processing
 
-For providers without batch APIs (DeepSeek, Together, Groq, OpenRouter, etc.):
+Same interface as `batch_process()` but uses direct Gemini API calls for immediate results at full cost:
 
 ```python
+from gemini_batch import process, async_process
+
+# Sync
+results = process(
+    prompts=[["What is 2+2?"]],
+    schema=Answer,
+    max_concurrent=10,
+)
+
 # Async
 results = await async_process(
     prompts=[["What is 2+2?"]],
     schema=Answer,
-    model="deepseek-chat",
-    base_url="https://api.deepseek.com",
-    api_key="...",  # or OPENAI_API_KEY env var
-    max_concurrent=10,  # rate limiting
+    max_concurrent=10,
+    rpm=60,  # optional requests-per-minute limit
 )
 
-# Sync wrapper
-results = process(prompts, schema, model="deepseek-chat", ...)
+# With metadata
+results, metadata = process(
+    prompts=[["Hello"]],
+    schema=Answer,
+    return_metadata=True,
+)
 ```
 
 **Key differences from batch_process:**
-- Uses `openai` SDK's `AsyncOpenAI` (true asyncio)
-- Images encoded as base64 data URLs (not file URIs)
-- Rate limiting via `asyncio.Semaphore(max_concurrent)`
-- Structured output via JSON mode + Pydantic parsing (not all providers support json_schema)
+- Uses `client.aio.models.generate_content()` (direct Gemini API, not batch)
+- Immediate results (no job queuing/polling)
+- Full cost (no 50% batch discount)
+- Concurrency control via `asyncio.Semaphore(max_concurrent)`
+- Optional `rpm` rate limiting (interval-based)
 - Retry with exponential backoff (`retry_count`, `retry_delay`)
-
-**Install:** `pip install gemini-batch[async]` or `pip install gemini-batch[openai]`
+- Same prompt format, schema handling, and media upload as `batch_process`
 
 ### Structured Output & Parsing
 
@@ -242,7 +253,7 @@ Coverage:
 - **`test_utils.py`**: File upload, PDF conversion, config, API client, JSON extraction
 - **`test_batch.py`**: Job creation, monitoring, result parsing (including robust parsing: markdown, malformed JSONL, validation errors)
 - **`test_embedding.py`**: Embedding batch job creation, result parsing, task type validation
-- **`test_async_batch.py`**: Async processing, media encoding, OpenAI message building, retry logic
+- **`test_direct.py`**: Direct API processing, content building, response parsing, retry logic
 - **`test_aggregation.py`**: Majority voting
 
 ### Integration Tests (Live API, Essential)

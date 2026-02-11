@@ -16,7 +16,6 @@ from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
 from google.genai import types as genai_types
-import hashlib
 import io
 import time
 import json
@@ -47,6 +46,7 @@ from .utils import (
     list_gcs_blobs,
     is_list_schema,
     create_list_wrapper,
+    _compute_content_hash,
 )
 from .types import ListVoteConfig, MajorityVoteResult, TokenStatistics
 from .embedding import (
@@ -58,12 +58,7 @@ from .embedding import (
     parse_embedding_results,
 )
 
-# Optional async processing (requires openai package)
-try:
-    from .async_batch import async_process, process
-except ImportError:
-    async_process = None
-    process = None
+from .direct import async_process, process
 
 __version__ = "0.9.5"
 __all__ = [
@@ -77,7 +72,7 @@ __all__ = [
     "create_embedding_batch_job",
     "download_embedding_results",
     "parse_embedding_results",
-    # Async processing (OpenAI-compatible APIs)
+    # Direct Gemini API processing
     "async_process",
     "process",
     # Low-level batch API
@@ -100,28 +95,6 @@ __all__ = [
     "download_from_gcs",
     "list_gcs_blobs",
 ]
-
-
-def _compute_content_hash(file: Union[Path, Image.Image, bytes]) -> str:
-    """Compute hash for deduplication (first 64KB + size for speed)."""
-    CHUNK_SIZE = 65536  # 64KB
-
-    if isinstance(file, Path):
-        size = file.stat().st_size
-        with open(file, 'rb') as f:
-            chunk = f.read(CHUNK_SIZE)
-        return hashlib.sha256(chunk + str(size).encode()).hexdigest()
-
-    elif isinstance(file, Image.Image):
-        # Use raw pixel bytes - much faster than PNG encoding
-        data = file.tobytes()
-        mode_size = f"{file.mode}_{file.size}".encode()
-        return hashlib.sha256(data[:CHUNK_SIZE] + mode_size).hexdigest()
-
-    elif isinstance(file, bytes):
-        return hashlib.sha256(file[:CHUNK_SIZE] + str(len(file)).encode()).hexdigest()
-
-    raise ValueError(f"Unsupported file type: {type(file)}")
 
 
 def batch_process(
@@ -348,74 +321,14 @@ def batch_process(
 
         return parsed
 
-    # Phase 1: Collect unique files (fast!)
-    # Paths: deduplicate by resolved path string using set membership (O(1))
-    # bytes/Image: deduplicate by content hash (still need to track positions)
-    logger.info("Collecting unique files...")
-    
-    path_set: set[str] = set()     # resolved path strings for O(1) dedup
-    unique_paths: list[Path] = []  # ordered list of unique Paths
-    
-    # For bytes/Image, we still need position tracking (rare case)
-    content_hashes: Dict[str, Dict[str, str]] = {}  # hash -> uri_info (after upload)
-    content_files: list[tuple[int, int, Any, str]] = []  # (i, j, file, hash)
-    
-    for i, prompt_parts in enumerate(prompts):
-        for j, part in enumerate(prompt_parts):
-            if isinstance(part, Path):
-                path_key = str(part.resolve())
-                if path_key not in path_set:
-                    path_set.add(path_key)
-                    unique_paths.append(part)
-            elif isinstance(part, (Image.Image, bytes)):
-                content_hash = _compute_content_hash(part)
-                if content_hash not in content_hashes:
-                    content_hashes[content_hash] = None  # Placeholder, filled after upload
-                    content_files.append((i, j, part, content_hash))
-    
-    logger.info(f"Found {len(unique_paths)} unique paths, {len(content_files)} content-based files")
-
-    # Phase 2: Upload files
-    # For Paths: upload directly, store result in path_str -> uri_info mapping
-    # For bytes/Image: upload and store in content_hash -> uri_info mapping
-    path_to_uri: Dict[str, Dict[str, str]] = {}  # resolved path str -> uri_info
-    
-    if unique_paths:
-        # Convert Paths to upload format: (idx, 0, path) - idx only for progress tracking
-        path_upload_list = [(idx, 0, p) for idx, p in enumerate(unique_paths)]
-        
-        logger.info(f"Uploading {len(unique_paths)} unique files...")
-        path_results = asyncio.run(
-            utils.upload_files_parallel(
-                path_upload_list,
-                gemini_client,
-                max_concurrent=max_upload_workers,
-                show_progress=show_progress,
-            )
+    # Upload files (dedup + parallel upload)
+    path_to_uri, content_hashes = asyncio.run(
+        utils.collect_and_upload_files(
+            prompts, gemini_client,
+            max_upload_workers=max_upload_workers,
+            show_progress=show_progress,
         )
-        
-        # Build path_str -> uri_info mapping
-        for idx, path in enumerate(unique_paths):
-            path_key = str(path.resolve())
-            path_to_uri[path_key] = path_results[(idx, 0)]
-    
-    if content_files:
-        # Upload content-based files (bytes/Image)
-        content_upload_list = [(i, j, f) for i, j, f, _ in content_files]
-        
-        logger.info(f"Uploading {len(content_files)} content-based files...")
-        content_results = asyncio.run(
-            utils.upload_files_parallel(
-                content_upload_list,
-                gemini_client,
-                max_concurrent=max_upload_workers,
-                show_progress=show_progress,
-            )
-        )
-        
-        # Build content_hash -> uri_info mapping
-        for i, j, _, content_hash in content_files:
-            content_hashes[content_hash] = content_results[(i, j)]
+    )
 
     # Phase 3: Build requests from prompts using uploaded file URIs
     requests = []
