@@ -16,6 +16,9 @@ results = batch_process(prompts, schema, wait=True)
 
 # Batch Embeddings (50% cost savings)
 embeddings = batch_embed(texts, task_type="RETRIEVAL_DOCUMENT")
+# With reduced dimensions (gemini-embedding-2)
+embeddings = batch_embed(texts, model="gemini-embedding-2-preview", output_dimensionality=768)
+normalized = normalize_embeddings(embeddings)  # L2-normalize after reducing dims
 
 # Direct Gemini API (immediate results, full cost)
 results = await async_process(prompts, schema, max_concurrent=10)
@@ -39,7 +42,7 @@ new_job = resume_batch_job("projects/.../batchJobs/123")  # or GCS URI
 - **`batch.py`**: Job creation, monitoring, result download/parsing
 - **`embedding.py`**: Batch embedding generation with task type support
 - **`direct.py`**: Direct Gemini API processing (`process`/`async_process`) using `client.aio.models.generate_content()`
-- **`utils.py`**: `GeminiClient`, file upload/dedup, PDF conversion, config building, JSON extraction
+- **`utils.py`**: `GeminiClient`, file upload/dedup, PDF conversion, config building, JSON extraction, `normalize_embeddings()`
 - **`aggregation.py`**: Majority voting utilities
 - **`config.py`**: Model, batch, image processing, media resolution, embedding, direct API defaults
 
@@ -178,12 +181,20 @@ embeddings = batch_embed(
 - `SEMANTIC_SIMILARITY`: For similarity comparisons
 - `CLASSIFICATION`: For text classification
 - `CLUSTERING`: For clustering tasks
+- `QUESTION_ANSWERING`: For question answering (gemini-embedding-2+)
+- `FACT_VERIFICATION`: For fact verification (gemini-embedding-2+)
+- `CODE_RETRIEVAL_QUERY`: For code retrieval queries (gemini-embedding-2+)
+
+**Output Dimensionality:**
+- `batch_embed()`, `embed()`, and `async_embed()` accept `output_dimensionality` to reduce vector size (e.g., 768)
+- `gemini-embedding-2` auto-normalizes only at full 3072 dims; use `normalize_embeddings()` after reducing dimensions
+- `normalize_embeddings()` utility: L2-normalizes vectors, preserves `None` entries from failed requests
 
 **Key Implementation Details:**
 - Uses `client.batches.create_embeddings()` (different from text generation's `create()`)
-- JSONL format: `{"key": "0", "request": {"content": {"parts": [{"text": "..."}]}, "task_type": "..."}}`
+- JSONL format: `{"key": "0", "request": {"content": {"parts": [{"text": "..."}]}, "task_type": "...", "output_dimensionality": N}}`
 - Result parsing extracts `response["embedding"]["values"]`
-- Model: `gemini-embedding-001` (default), produces 3072-dimensional vectors
+- Model: `gemini-embedding-001` (default), produces 3072-dimensional vectors. Also supports `gemini-embedding-2-preview`.
 
 ### Direct API Processing
 
@@ -250,9 +261,9 @@ Controls quality vs cost: `"MEDIA_RESOLUTION_LOW"` | `"MEDIUM"` | `"HIGH"` (70-1
 Run: `.venv/bin/python -m pytest -m "not integration"`
 
 Coverage:
-- **`test_utils.py`**: File upload, PDF conversion, config, API client, JSON extraction
+- **`test_utils.py`**: File upload, PDF conversion, config, API client, JSON extraction, `normalize_embeddings()`
 - **`test_batch.py`**: Job creation, monitoring, result parsing (including robust parsing: markdown, malformed JSONL, validation errors)
-- **`test_embedding.py`**: Embedding batch job creation, result parsing, task type validation
+- **`test_embedding.py`**: Embedding batch job creation, result parsing, task type validation, output dimensionality, new task types
 - **`test_direct.py`**: Direct API processing, content building, response parsing, retry logic
 - **`test_aggregation.py`**: Majority voting
 

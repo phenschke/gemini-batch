@@ -89,7 +89,14 @@ from gemini_batch import embed
 embeddings = embed(["text 1", "text 2"], task_type="RETRIEVAL_QUERY")
 # Returns immediately (no batch job), 3072-dim vectors
 ```
-Task types: `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING`
+Task types: `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING`, `QUESTION_ANSWERING`, `FACT_VERIFICATION`, `CODE_RETRIEVAL_QUERY`
+
+**Reduced dimensions & normalization:** Use `output_dimensionality` with `gemini-embedding-2-preview` and normalize:
+```python
+from gemini_batch import batch_embed, normalize_embeddings
+embeddings = batch_embed(texts, model="gemini-embedding-2-preview", output_dimensionality=768)
+embeddings = normalize_embeddings(embeddings)  # L2-normalize for reduced dims
+```
 
 **Token statistics:** Analyze token usage across batches
 ```python

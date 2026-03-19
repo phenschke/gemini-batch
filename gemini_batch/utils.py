@@ -5,6 +5,7 @@ Core utilities for gemini-batch: client management, image processing, and utilit
 import os
 import io
 import re
+import math
 import hashlib
 import mimetypes
 import tempfile
@@ -1436,3 +1437,33 @@ def calculate_token_statistics(
         avg_cached_tokens=avg_cached_tokens,
         avg_thoughts_tokens=avg_thoughts_tokens,
     )
+
+
+def normalize_embeddings(
+    embeddings: List[Optional[List[float]]],
+) -> List[Optional[List[float]]]:
+    """
+    L2-normalize embedding vectors.
+
+    gemini-embedding-2 auto-normalizes only at the full 3072 dimensions. When
+    using a reduced output_dimensionality, vectors need manual L2 normalization
+    to ensure unit length. This function normalizes each vector in place.
+
+    Args:
+        embeddings: List of embedding vectors. None entries (failed requests)
+            are preserved as-is.
+
+    Returns:
+        List of L2-normalized embedding vectors with None entries preserved.
+    """
+    result: List[Optional[List[float]]] = []
+    for vec in embeddings:
+        if vec is None:
+            result.append(None)
+            continue
+        norm = math.sqrt(sum(x * x for x in vec))
+        if norm == 0.0:
+            result.append(vec)
+        else:
+            result.append([x / norm for x in vec])
+    return result

@@ -39,6 +39,7 @@ from .batch import (
 from .aggregation import aggregate_records
 from .utils import (
     calculate_token_statistics,
+    normalize_embeddings,
     GeminiClient,
     upload_file_for_batch,
     upload_to_gcs,
@@ -60,7 +61,7 @@ from .embedding import (
 
 from .direct import async_process, process
 
-__version__ = "0.9.5"
+__version__ = "0.10.0"
 __all__ = [
     "batch_process",
     # Batch embeddings
@@ -87,6 +88,7 @@ __all__ = [
     "ListVoteConfig",
     "MajorityVoteResult",
     "calculate_token_statistics",
+    "normalize_embeddings",
     "TokenStatistics",
     # Vertex AI / GCS utilities
     "GeminiClient",

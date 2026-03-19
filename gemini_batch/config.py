@@ -59,6 +59,9 @@ EMBEDDING_CONFIG = {
         "SEMANTIC_SIMILARITY",
         "CLASSIFICATION",
         "CLUSTERING",
+        "QUESTION_ANSWERING",
+        "FACT_VERIFICATION",
+        "CODE_RETRIEVAL_QUERY",
     },
 }
 

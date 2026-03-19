@@ -28,6 +28,7 @@ def create_embedding_batch_job(
     texts: List[str],
     model_name: str = app_config.EMBEDDING_CONFIG["default_model"],
     task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    output_dimensionality: Optional[int] = None,
     job_display_name: Optional[str] = None,
     jsonl_dir: Optional[str] = None,
     client: Optional[GeminiClient] = None,
@@ -41,7 +42,12 @@ def create_embedding_batch_job(
     Args:
         texts: List of text strings to embed
         model_name: Gemini embedding model to use
-        task_type: Embedding task type (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, etc.)
+        task_type: Embedding task type (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY,
+            SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING,
+            QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY)
+        output_dimensionality: Optional reduced embedding dimension (e.g., 768).
+            When using reduced dimensions with gemini-embedding-2, vectors may
+            need manual L2 normalization (see normalize_embeddings()).
         job_display_name: Display name for the batch job
         jsonl_dir: Directory to save JSONL file
         client: GeminiClient instance. If None, creates a new one.
@@ -76,12 +82,15 @@ def create_embedding_batch_job(
     # Build requests with embedding format
     requests = []
     for i, text in enumerate(texts):
+        request_body = {
+            "content": {"parts": [{"text": text}]},
+            "task_type": task_type,
+        }
+        if output_dimensionality is not None:
+            request_body["output_dimensionality"] = output_dimensionality
         request = {
             "key": str(i),
-            "request": {
-                "content": {"parts": [{"text": text}]},
-                "task_type": task_type
-            }
+            "request": request_body,
         }
         requests.append(request)
 
@@ -364,7 +373,12 @@ async def async_embed(
             - "SEMANTIC_SIMILARITY": For similarity comparisons
             - "CLASSIFICATION": For text classification
             - "CLUSTERING": For clustering tasks
-        output_dimensionality: Optional reduced embedding dimension (e.g., 768)
+            - "QUESTION_ANSWERING": For question answering
+            - "FACT_VERIFICATION": For fact verification
+            - "CODE_RETRIEVAL_QUERY": For code retrieval queries
+        output_dimensionality: Optional reduced embedding dimension (e.g., 768).
+            When using reduced dimensions with gemini-embedding-2, vectors may
+            need manual L2 normalization (see normalize_embeddings()).
         title: Optional title describing the content
         return_metadata: If True, returns tuple of (embeddings, metadata_list)
         max_concurrent: Maximum concurrent API requests
@@ -592,6 +606,7 @@ def batch_embed(
     texts: List[str],
     model: str = app_config.EMBEDDING_CONFIG["default_model"],
     task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    output_dimensionality: Optional[int] = None,
     wait: bool = True,
     job_display_name: Optional[str] = None,
     poll_interval: int = app_config.BATCH_CONFIG["poll_interval"],
@@ -623,6 +638,12 @@ def batch_embed(
             - "SEMANTIC_SIMILARITY": For similarity comparisons
             - "CLASSIFICATION": For text classification
             - "CLUSTERING": For clustering tasks
+            - "QUESTION_ANSWERING": For question answering
+            - "FACT_VERIFICATION": For fact verification
+            - "CODE_RETRIEVAL_QUERY": For code retrieval queries
+        output_dimensionality: Optional reduced embedding dimension (e.g., 768).
+            When using reduced dimensions with gemini-embedding-2, vectors may
+            need manual L2 normalization (see normalize_embeddings()).
         wait: If True, wait for completion and return results. If False, return job name.
         job_display_name: Optional display name for the batch job
         poll_interval: Seconds between job status checks (if wait=True)
@@ -672,6 +693,7 @@ def batch_embed(
         texts=texts,
         model_name=model,
         task_type=task_type,
+        output_dimensionality=output_dimensionality,
         job_display_name=job_display_name,
         jsonl_dir=jsonl_dir,
         client=gemini_client,

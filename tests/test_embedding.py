@@ -481,3 +481,132 @@ class TestAsyncEmbed:
         assert len(embeddings) == 3
         # Without rpm, should complete quickly (< 1s)
         assert elapsed < 1.0, f"Expected < 1s without rpm, got {elapsed:.2f}s"
+
+
+class TestNewTaskTypes:
+    """Tests for gemini-embedding-2 task types."""
+
+    def test_new_task_types_in_config(self):
+        """Test that new task types are present in valid_task_types."""
+        valid = config.EMBEDDING_CONFIG["valid_task_types"]
+        assert "QUESTION_ANSWERING" in valid
+        assert "FACT_VERIFICATION" in valid
+        assert "CODE_RETRIEVAL_QUERY" in valid
+
+    def test_original_task_types_still_valid(self):
+        """Test that original 5 task types are still present."""
+        valid = config.EMBEDDING_CONFIG["valid_task_types"]
+        for tt in ["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY", "SEMANTIC_SIMILARITY",
+                    "CLASSIFICATION", "CLUSTERING"]:
+            assert tt in valid
+
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_new_task_types_accepted_by_create_batch(self, mock_client_class, tmp_path):
+        """Test that new task types are accepted by create_embedding_batch_job."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        for task_type in ["QUESTION_ANSWERING", "FACT_VERIFICATION", "CODE_RETRIEVAL_QUERY"]:
+            job_name = create_embedding_batch_job(
+                ["Test text"],
+                task_type=task_type,
+                jsonl_dir=str(tmp_path),
+                client=mock_client,
+            )
+            assert job_name == "batches/embed-job-123"
+
+
+class TestOutputDimensionality:
+    """Tests for output_dimensionality in batch embedding path."""
+
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_output_dimensionality_in_jsonl(self, mock_client_class, tmp_path):
+        """Test that output_dimensionality appears in JSONL when specified."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        create_embedding_batch_job(
+            ["Hello world"],
+            output_dimensionality=768,
+            jsonl_dir=str(tmp_path),
+            client=mock_client,
+        )
+
+        jsonl_files = list(tmp_path.glob("embed_*_requests.jsonl"))
+        assert len(jsonl_files) == 1
+
+        with open(jsonl_files[0], "r") as f:
+            req = json.loads(f.readline())
+
+        assert req["request"]["output_dimensionality"] == 768
+
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_output_dimensionality_omitted_when_none(self, mock_client_class, tmp_path):
+        """Test that output_dimensionality is omitted from JSONL when None."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        create_embedding_batch_job(
+            ["Hello world"],
+            output_dimensionality=None,
+            jsonl_dir=str(tmp_path),
+            client=mock_client,
+        )
+
+        jsonl_files = list(tmp_path.glob("embed_*_requests.jsonl"))
+        with open(jsonl_files[0], "r") as f:
+            req = json.loads(f.readline())
+
+        assert "output_dimensionality" not in req["request"]
+
+    @patch('gemini_batch.embedding.download_embedding_results')
+    @patch('gemini_batch.embedding.monitor_batch_job')
+    @patch('gemini_batch.embedding.create_embedding_batch_job')
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_batch_embed_passes_output_dimensionality(
+        self, mock_client_class, mock_create, mock_monitor, mock_download, tmp_path
+    ):
+        """Test batch_embed passes output_dimensionality to create_embedding_batch_job."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_create.return_value = "batches/embed-job-123"
+        mock_monitor.return_value = "JOB_STATE_SUCCEEDED"
+
+        results_file = tmp_path / "results.jsonl"
+        with open(results_file, "w") as f:
+            f.write('{"key": "0", "response": {"embedding": {"values": [0.1, 0.2]}}}\n')
+        mock_download.return_value = str(results_file)
+
+        batch_embed(
+            ["Test text"],
+            output_dimensionality=256,
+            wait=True,
+            jsonl_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+        )
+
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args
+        assert call_kwargs.kwargs.get("output_dimensionality") == 256

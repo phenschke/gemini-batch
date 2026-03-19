@@ -1221,6 +1221,53 @@ class TestParseGcsUri:
     def test_parse_gcs_uri_invalid_empty_bucket(self):
         """Test parsing an invalid URI with empty bucket name."""
         from gemini_batch.utils import parse_gcs_uri
-        
+
         with pytest.raises(ValueError, match="Bucket name is empty"):
             parse_gcs_uri("gs:///path/to/file")
+
+
+class TestNormalizeEmbeddings:
+    """Tests for normalize_embeddings utility."""
+
+    def test_normalizes_vectors(self):
+        """Test L2 normalization of a simple vector."""
+        from gemini_batch.utils import normalize_embeddings
+
+        result = normalize_embeddings([[3.0, 4.0]])
+        assert len(result) == 1
+        assert abs(result[0][0] - 0.6) < 1e-9
+        assert abs(result[0][1] - 0.8) < 1e-9
+
+    def test_preserves_none_entries(self):
+        """Test that None entries are preserved."""
+        from gemini_batch.utils import normalize_embeddings
+
+        result = normalize_embeddings([[3.0, 4.0], None, [1.0, 0.0]])
+        assert len(result) == 3
+        assert result[1] is None
+        assert abs(result[0][0] - 0.6) < 1e-9
+        assert result[2] == [1.0, 0.0]
+
+    def test_handles_zero_vector(self):
+        """Test that zero vectors are returned unchanged."""
+        from gemini_batch.utils import normalize_embeddings
+
+        result = normalize_embeddings([[0.0, 0.0, 0.0]])
+        assert result[0] == [0.0, 0.0, 0.0]
+
+    def test_handles_empty_list(self):
+        """Test that empty list returns empty list."""
+        from gemini_batch.utils import normalize_embeddings
+
+        result = normalize_embeddings([])
+        assert result == []
+
+    def test_already_normalized_vector(self):
+        """Test that already-normalized vectors remain unchanged."""
+        from gemini_batch.utils import normalize_embeddings
+        import math
+
+        vec = [1.0 / math.sqrt(3), 1.0 / math.sqrt(3), 1.0 / math.sqrt(3)]
+        result = normalize_embeddings([vec])
+        norm = math.sqrt(sum(x * x for x in result[0]))
+        assert abs(norm - 1.0) < 1e-9
