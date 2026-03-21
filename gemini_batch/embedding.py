@@ -259,6 +259,22 @@ def parse_embedding_results(
 
     json_lines = sorted(json_lines, key=extract_sort_key)
 
+    # Deduplicate: Batch API can return duplicate results (same quirk as text generation)
+    seen_keys = set()
+    deduped = []
+    for line in json_lines:
+        if line is None:
+            deduped.append(line)
+            continue
+        actual_key = line.get('key', None)
+        if actual_key is not None and actual_key in seen_keys:
+            logger.warning(f"Dropping duplicate embedding result for key: {actual_key}")
+        else:
+            if actual_key is not None:
+                seen_keys.add(actual_key)
+            deduped.append(line)
+    json_lines = deduped
+
     embeddings: List[Optional[List[float]]] = []
     metadata_list: List[Optional[Dict[str, Any]]] = []
     success_count = 0
@@ -366,7 +382,7 @@ async def async_embed(
 
     Args:
         texts: List of text strings to embed
-        model: Gemini embedding model to use (default: gemini-embedding-001)
+        model: Gemini embedding model to use (default: gemini-embedding-2-preview)
         task_type: Embedding task type. Valid values:
             - "RETRIEVAL_DOCUMENT": For documents to be retrieved
             - "RETRIEVAL_QUERY": For search queries
@@ -450,6 +466,7 @@ async def async_embed(
             return
 
         min_interval = 60.0 / rpm  # Minimum seconds between requests
+        wait_time = 0.0
 
         async with rate_lock:
             now = time.time()
@@ -458,15 +475,17 @@ async def async_embed(
             if elapsed < min_interval:
                 wait_time = min_interval - elapsed
                 logger.debug(f"Rate limit: waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
 
-            # Record this request time
-            last_request_time[0] = time.time()
+            # Reserve the slot before releasing lock
+            last_request_time[0] = now + wait_time
+
+        if wait_time > 0:
+            await asyncio.sleep(wait_time)
 
     async def process_batch(batch: List[str]) -> Tuple[List[List[float]], List[Dict]]:
         """Process a single batch of texts."""
-        await wait_for_rate_limit()
         async with semaphore:
+            await wait_for_rate_limit()
             # Use native async API via client.aio
             response = await client.client.aio.models.embed_content(
                 model=model,
@@ -631,7 +650,7 @@ def batch_embed(
 
     Args:
         texts: List of text strings to embed
-        model: Gemini embedding model to use (default: gemini-embedding-001)
+        model: Gemini embedding model to use (default: gemini-embedding-2-preview)
         task_type: Embedding task type. Valid values:
             - "RETRIEVAL_DOCUMENT": For documents to be retrieved
             - "RETRIEVAL_QUERY": For search queries

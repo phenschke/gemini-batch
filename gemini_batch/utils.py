@@ -39,27 +39,37 @@ except ImportError:
     HAS_ASYNC_GCS = False
     AsyncGCSStorage = None
 
-# Logging configuration
+# Library-safe logging: only configure the library's own logger with a NullHandler.
+# Host applications control root logging; we don't call basicConfig at import time.
+logger = logging.getLogger("gemini_batch")
+logger.addHandler(logging.NullHandler())
+
+# Suppress verbose HTTP request logs from httpx/httpcore
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 def setup_logging(level: int = logging.INFO, format_string: str = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s", filename: Optional[str] = None) -> logging.Logger:
-    """Set up logging configuration."""
-    handlers = []
+    """
+    Optionally configure the gemini_batch logger with a console/file handler.
+
+    Call this explicitly if you want gemini-batch to emit its own log output
+    (e.g., in a script). Library consumers who already configure the root
+    logger do NOT need to call this.
+    """
+    handlers: list = []
     if filename:
         handlers.append(logging.FileHandler(filename))
     handlers.append(logging.StreamHandler())
 
-    logging.basicConfig(
-        level=level,
-        format=format_string,
-        handlers=handlers,
-    )
+    # Remove the NullHandler and attach real handlers
+    logger.handlers.clear()
+    for h in handlers:
+        h.setFormatter(logging.Formatter(format_string))
+        logger.addHandler(h)
+    logger.setLevel(level)
 
-    # Suppress verbose HTTP request logs from httpx/httpcore
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-    return logging.getLogger("gemini_batch")
-
-logger = setup_logging()
+    return logger
 
 
 def is_list_schema(schema: Any) -> bool:
@@ -371,10 +381,11 @@ class GeminiClient:
         bucket_name = bucket_name or self.get_gcs_bucket_name()
         gcs = self.gcs_client
         
+        from google.api_core import exceptions as google_exceptions
         try:
             bucket = gcs.get_bucket(bucket_name)
             logger.debug(f"Using existing GCS bucket: {bucket_name}")
-        except Exception:
+        except google_exceptions.NotFound:
             # Bucket doesn't exist, create it
             if not config.VERTEXAI_CONFIG.get("auto_create_bucket", True):
                 raise ValueError(
@@ -642,6 +653,19 @@ def upload_file_for_batch(
         return upload_file_to_gemini(file, gemini_client.client)
 
 
+def _detect_bytes_suffix(data: bytes) -> str:
+    """Detect file suffix from magic bytes."""
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return ".png"
+    elif data[:2] == b'\xff\xd8':
+        return ".jpg"
+    elif data[:6] in (b'GIF87a', b'GIF89a'):
+        return ".gif"
+    elif data[:4] == b'%PDF':
+        return ".pdf"
+    return ".bin"
+
+
 def upload_file_to_gemini(
     file: Union[Path, Image.Image, bytes],
     client: genai.Client
@@ -696,14 +720,15 @@ def upload_file_to_gemini(
             os.unlink(tmp_path)
 
     elif isinstance(file, bytes):
-        # Raw bytes - save to temp file and upload
+        # Raw bytes - detect format, save to temp file and upload
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        suffix = _detect_bytes_suffix(file)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(file)
             tmp_path = tmp.name
 
         try:
-            logger.debug(f"Uploading bytes as PNG")
+            logger.debug(f"Uploading bytes with suffix {suffix}")
             uploaded_file = client.files.upload(file=tmp_path)
             logger.debug(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
@@ -782,13 +807,14 @@ async def upload_file_to_gemini_async(
             os.unlink(tmp_path)
 
     elif isinstance(file, bytes):
-        # Raw bytes - save to temp file and upload
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        # Raw bytes - detect format, save to temp file and upload
+        suffix = _detect_bytes_suffix(file)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(file)
             tmp_path = tmp.name
 
         try:
-            logger.debug("Async uploading bytes as PNG")
+            logger.debug(f"Async uploading bytes with suffix {suffix}")
             uploaded_file = await client.aio.files.upload(file=tmp_path)
             logger.debug(f"Uploaded bytes: {uploaded_file.name} with MIME type: {uploaded_file.mime_type}")
 
@@ -1296,7 +1322,7 @@ def build_generation_config(
     # Auto-convert thinking_budget=0 to thinking_level="MINIMAL" for gemini-3* models
     is_gemini_3_model = model is not None and model.startswith("gemini-3")
     if is_gemini_3_model and thinking_budget == 0 and thinking_level is None:
-        print(f"[gemini-batch] Note: thinking_budget=0 auto-converted to thinking_level='MINIMAL' for {model}")
+        logger.info(f"thinking_budget=0 auto-converted to thinking_level='MINIMAL' for {model}")
         thinking_level = "MINIMAL"
         thinking_budget = None
 

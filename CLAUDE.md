@@ -194,7 +194,7 @@ embeddings = batch_embed(
 - Uses `client.batches.create_embeddings()` (different from text generation's `create()`)
 - JSONL format: `{"key": "0", "request": {"content": {"parts": [{"text": "..."}]}, "task_type": "...", "output_dimensionality": N}}`
 - Result parsing extracts `response["embedding"]["values"]`
-- Model: `gemini-embedding-001` (default), produces 3072-dimensional vectors. Also supports `gemini-embedding-2-preview`.
+- Model: `gemini-embedding-2-preview` (default), produces 3072-dimensional vectors. Also supports `gemini-embedding-001`.
 
 ### Direct API Processing
 

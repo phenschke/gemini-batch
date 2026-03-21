@@ -78,7 +78,7 @@ def extract_timestamp_from_display_name(display_name: str) -> Optional[int]:
     """
     if not display_name:
         return None
-    match = re.match(r'batch-(\d+)', display_name)
+    match = re.match(r'(?:batch|embed|batch-resume)-(\d+)', display_name)
     return int(match.group(1)) if match else None
 
 
@@ -113,15 +113,17 @@ def create_batch_job(
     if client is None:
         client = GeminiClient()
 
-    # Apply generation config to all requests if provided
+    # Apply generation config to all requests if provided (copy to avoid mutating caller's list)
     if generation_config:
         gen_config_dict = generation_config
         if isinstance(generation_config, types.GenerateContentConfig):
             gen_config_dict = generation_config.model_dump(exclude_unset=True, exclude_none=True, mode='json')
 
-        for req in requests:
-            if 'request' in req:
-                req['request']['generation_config'] = gen_config_dict
+        requests = [
+            {**req, 'request': {**req['request'], 'generation_config': gen_config_dict}}
+            if 'request' in req else req
+            for req in requests
+        ]
 
     # Generate timestamp for consistent naming
     timestamp = int(time.time())
@@ -542,6 +544,8 @@ def resume_batch_job(
 
     # Build config for the resumed job
     config_kwargs = {"display_name": job_display_name, "dest": gcs_output_path}
+    if generation_config is not None:
+        config_kwargs["generation_config"] = generation_config
 
     # Create batch job using previous output as input source
     batch_job = client.client.batches.create(
@@ -756,6 +760,7 @@ def parse_batch_results(
         try:
             # Extract text response
             response = line['response']
+            metadata = None  # Collect metadata locally, append with parsed_results
             if hasattr(response, 'candidates'):
                 # genai response object
                 llm_output = _extract_text_from_parts(response.candidates[0].content.parts)
@@ -772,7 +777,6 @@ def parse_batch_results(
                         }
                     if hasattr(response, 'model_version'):
                         metadata['modelVersion'] = response.model_version
-                    metadata_list.append(metadata)
             elif isinstance(response, dict):
                 # dict format
                 llm_output = _extract_text_from_parts(response['candidates'][0]['content']['parts'])
@@ -783,7 +787,6 @@ def parse_batch_results(
                         metadata['usageMetadata'] = response['usageMetadata']
                     if 'modelVersion' in response:
                         metadata['modelVersion'] = response['modelVersion']
-                    metadata_list.append(metadata)
             else:
                 logger.error(f"Unknown response format for {identifier}")
                 parsed_results.append(None)
@@ -795,6 +798,8 @@ def parse_batch_results(
             # If no schema, return raw text
             if schema is None:
                 parsed_results.append(llm_output)
+                if return_metadata:
+                    metadata_list.append(metadata)
                 success_count += 1
                 logger.debug(f"Successfully extracted raw text for {identifier}")
             else:
@@ -805,18 +810,22 @@ def parse_batch_results(
                     logger.debug(f"Could not extract JSON from text for {identifier}, using original output")
                     extracted_json = llm_output
 
-                # Parse and validate with Pydantic
+                # Parse and optionally validate with Pydantic
                 if validate:
                     parsed = schema.model_validate_json(extracted_json)
                     parsed_results.append(parsed)
+                    if return_metadata:
+                        metadata_list.append(metadata)
                     success_count += 1
                     logger.debug(f"Successfully parsed and validated result for {identifier}")
                 else:
                     data = json.loads(extracted_json)
-                    parsed = schema.model_validate(data)
+                    parsed = schema.model_construct(**data)
                     parsed_results.append(parsed)
+                    if return_metadata:
+                        metadata_list.append(metadata)
                     success_count += 1
-                    logger.debug(f"Successfully parsed result for {identifier}")
+                    logger.debug(f"Successfully parsed result for {identifier} (no validation)")
 
         except (KeyError, IndexError, json.JSONDecodeError, AttributeError, ValidationError) as e:
             logger.error(f"Failed to parse result for {identifier}: {e}")

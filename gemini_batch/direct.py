@@ -241,12 +241,15 @@ async def async_process(
         if rpm is None:
             return
         min_interval = 60.0 / rpm
+        wait_time = 0.0
         async with rate_lock:
             now = time.time()
             elapsed = now - last_request_time[0]
             if elapsed < min_interval:
-                await asyncio.sleep(min_interval - elapsed)
-            last_request_time[0] = time.time()
+                wait_time = min_interval - elapsed
+            last_request_time[0] = now + wait_time  # Reserve the slot
+        if wait_time > 0:
+            await asyncio.sleep(wait_time)
 
     # Semaphore for concurrency
     semaphore = asyncio.Semaphore(max_concurrent)
@@ -258,8 +261,8 @@ async def async_process(
         last_error = None
         for attempt in range(retry_count + 1):
             try:
-                await wait_for_rate_limit()
                 async with semaphore:
+                    await wait_for_rate_limit()
                     response = await gemini_client.client.aio.models.generate_content(
                         model=model,
                         contents=parts,

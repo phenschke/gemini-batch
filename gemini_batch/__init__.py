@@ -61,7 +61,13 @@ from .embedding import (
 
 from .direct import async_process, process
 
-__version__ = "0.10.0"
+# Auto-configure logging for script usage: if the root logger has no handlers,
+# set up a basic console handler so users see log output without explicit setup.
+# Library consumers who configure root logging themselves are unaffected.
+if not logging.root.handlers:
+    utils.setup_logging()
+
+__version__ = "0.11.0"
 __all__ = [
     "batch_process",
     # Batch embeddings
