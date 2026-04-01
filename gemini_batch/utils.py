@@ -1275,7 +1275,7 @@ def _show_image_popup(img: Image.Image, page_number: int) -> None:
 
 def build_generation_config(
     response_schema: Optional[Union[types.Schema, Type[BaseModel]]] = None,
-    thinking_budget: Optional[int] = None,
+    thinking_budget: Optional[int] = 0,
     thinking_level: Optional[str] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
@@ -1289,7 +1289,8 @@ def build_generation_config(
 
     Args:
         response_schema: The schema for the response (either types.Schema or Pydantic BaseModel class).
-        thinking_budget: The thinking budget (int, for Flash models). Cannot be used with thinking_level.
+        thinking_budget: The thinking budget (int, for Flash models). Defaults to 0 (disabled).
+            Set to a positive int to enable thinking. Cannot be used with thinking_level.
             Note: For gemini-3* models, thinking_budget=0 is automatically converted to
             thinking_level="MINIMAL" as these models don't support thinking_budget.
         thinking_level: The thinking level (str: "low" or "high", for Gemini 3.0 Pro). Cannot be used with thinking_budget.
@@ -1333,8 +1334,12 @@ def build_generation_config(
     if thinking_budget is not None:
         include_thoughts = False if thinking_budget == 0 else None
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget, include_thoughts=include_thoughts)
+        if thinking_budget > 0:
+            logger.info(f"Thinking enabled with budget={thinking_budget} tokens")
     elif thinking_level is not None:
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+        if thinking_level != "MINIMAL":
+            logger.info(f"Thinking enabled with level={thinking_level}")
 
     if top_p is not None:
         gen_config_dict["top_p"] = top_p
