@@ -1336,9 +1336,13 @@ def build_generation_config(
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget, include_thoughts=include_thoughts)
         if thinking_budget > 0:
             logger.info(f"Thinking enabled with budget={thinking_budget} tokens")
+        else:
+            logger.info("Thinking disabled (budget=0)")
     elif thinking_level is not None:
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
-        if thinking_level != "MINIMAL":
+        if thinking_level == "MINIMAL":
+            logger.info("Thinking disabled (level=MINIMAL)")
+        else:
             logger.info(f"Thinking enabled with level={thinking_level}")
 
     if top_p is not None:
