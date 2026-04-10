@@ -1,6 +1,7 @@
 """Tests for direct Gemini API processing functionality."""
 import asyncio
 import json
+import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 from pathlib import Path
@@ -13,6 +14,7 @@ from google.genai import types as genai_types
 from gemini_batch.direct import (
     _build_content_parts,
     _extract_metadata,
+    _is_rate_limit_error,
     async_process,
     process,
 )
@@ -435,3 +437,110 @@ class TestSyncProcess:
 
         assert len(results) == 1
         assert results[0] == "Sync result"
+
+
+class TestIsRateLimitError:
+    def test_detects_429_in_message(self):
+        assert _is_rate_limit_error(Exception("429 RESOURCE_EXHAUSTED")) is True
+
+    def test_detects_resource_exhausted(self):
+        assert _is_rate_limit_error(Exception("RESOURCE_EXHAUSTED")) is True
+
+    def test_ignores_other_errors(self):
+        assert _is_rate_limit_error(Exception("Connection timeout")) is False
+        assert _is_rate_limit_error(ValueError("Bad input")) is False
+
+
+class TestRateLimitRetry:
+    @pytest.mark.asyncio
+    async def test_429_triggers_longer_backoff_and_succeeds(self):
+        """429 errors should use longer backoff but still retry and succeed."""
+        good_response = _make_response("OK")
+
+        with patch("gemini_batch.direct.GeminiClient") as MockClient, \
+             patch("gemini_batch.direct.collect_and_upload_files", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = ({}, {})
+
+            mock_client_instance = MagicMock()
+            mock_aio = MagicMock()
+            mock_models = MagicMock()
+            mock_models.generate_content = AsyncMock(
+                side_effect=[Exception("429 RESOURCE_EXHAUSTED"), good_response]
+            )
+            mock_aio.models = mock_models
+            mock_client_instance.client.aio = mock_aio
+            MockClient.return_value = mock_client_instance
+
+            results = await async_process(
+                prompts=[["Test"]],
+                retry_count=2,
+                retry_delay=0.01,
+                show_progress=False,
+            )
+
+        assert results[0] == "OK"
+        assert mock_models.generate_content.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_429_global_throttle_affects_concurrent_requests(self):
+        """When one request hits a 429, other concurrent requests should also slow down."""
+        good_response = _make_response("OK")
+        call_times = []
+        original_time = time.time
+
+        async def tracked_generate(*args, **kwargs):
+            call_times.append(time.time())
+            if len(call_times) <= 1:
+                raise Exception("429 RESOURCE_EXHAUSTED")
+            return good_response
+
+        with patch("gemini_batch.direct.GeminiClient") as MockClient, \
+             patch("gemini_batch.direct.collect_and_upload_files", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = ({}, {})
+
+            mock_client_instance = MagicMock()
+            mock_aio = MagicMock()
+            mock_models = MagicMock()
+            mock_models.generate_content = AsyncMock(side_effect=tracked_generate)
+            mock_aio.models = mock_models
+            mock_client_instance.client.aio = mock_aio
+            MockClient.return_value = mock_client_instance
+
+            results = await async_process(
+                prompts=[["P1"], ["P2"]],
+                retry_count=2,
+                retry_delay=0.01,
+                max_concurrent=2,
+                show_progress=False,
+            )
+
+        # Both should eventually succeed
+        successful = [r for r in results if r is not None]
+        assert len(successful) == 2
+
+    @pytest.mark.asyncio
+    async def test_all_429_retries_exhausted(self):
+        """If all retries hit 429, the prompt should fail gracefully."""
+        with patch("gemini_batch.direct.GeminiClient") as MockClient, \
+             patch("gemini_batch.direct.collect_and_upload_files", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = ({}, {})
+
+            mock_client_instance = MagicMock()
+            mock_aio = MagicMock()
+            mock_models = MagicMock()
+            mock_models.generate_content = AsyncMock(
+                side_effect=Exception("429 RESOURCE_EXHAUSTED")
+            )
+            mock_aio.models = mock_models
+            mock_client_instance.client.aio = mock_aio
+            MockClient.return_value = mock_client_instance
+
+            results = await async_process(
+                prompts=[["Test"]],
+                retry_count=1,
+                retry_delay=0.01,
+                show_progress=False,
+            )
+
+        assert results[0] is None
+        assert mock_models.generate_content.call_count == 2

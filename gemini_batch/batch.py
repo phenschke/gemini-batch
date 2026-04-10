@@ -543,9 +543,10 @@ def resume_batch_job(
         gcs_output_path = f"gs://{bucket_name}/batch-results/{job_display_name}/"
 
     # Build config for the resumed job
+    # Note: generation_config is not passed here — CreateBatchJobConfig does not
+    # accept it.  The generation config is already embedded in the request JSONL
+    # from the original job, so it carries over automatically.
     config_kwargs = {"display_name": job_display_name, "dest": gcs_output_path}
-    if generation_config is not None:
-        config_kwargs["generation_config"] = generation_config
 
     # Create batch job using previous output as input source
     batch_job = client.client.batches.create(

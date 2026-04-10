@@ -7,6 +7,7 @@ batch_process() but for immediate results at full cost.
 """
 
 import asyncio
+import random
 import time
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, get_origin, get_args
 from pathlib import Path
@@ -27,6 +28,12 @@ from .utils import (
     _compute_content_hash,
 )
 from .batch import _extract_text_from_parts
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """Check if an exception is a 429 rate limit error."""
+    error_str = str(e)
+    return "429" in error_str or "RESOURCE_EXHAUSTED" in error_str
 
 
 def _build_content_parts(
@@ -237,7 +244,27 @@ async def async_process(
     last_request_time: List[float] = [0.0]
     rate_lock = asyncio.Lock()
 
+    # Global adaptive throttle for 429s — shared across all tasks
+    throttle_until: List[float] = [0.0]  # timestamp until which all requests should wait
+    throttle_lock = asyncio.Lock()
+
+    async def apply_global_throttle(base_delay: float) -> None:
+        """When a 429 is hit, push back ALL requests by base_delay with jitter."""
+        async with throttle_lock:
+            now = time.time()
+            jitter = random.uniform(0.5, 1.5)
+            new_until = now + base_delay * jitter
+            # Only extend the throttle, never shorten it
+            if new_until > throttle_until[0]:
+                throttle_until[0] = new_until
+                logger.info(f"Rate limited — global throttle for {base_delay * jitter:.1f}s")
+
     async def wait_for_rate_limit() -> None:
+        # Wait for global throttle first
+        now = time.time()
+        if throttle_until[0] > now:
+            await asyncio.sleep(throttle_until[0] - now)
+
         if rpm is None:
             return
         min_interval = 60.0 / rpm
@@ -253,6 +280,12 @@ async def async_process(
 
     # Semaphore for concurrency
     semaphore = asyncio.Semaphore(max_concurrent)
+
+    # Suppress noisy google_genai.models logger (AFC spam)
+    import logging as _logging
+    _genai_logger = _logging.getLogger("google_genai.models")
+    _prev_level = _genai_logger.level
+    _genai_logger.setLevel(_logging.WARNING)
 
     async def process_single(
         idx: int, parts: List[genai_types.Part]
@@ -298,7 +331,13 @@ async def async_process(
             except Exception as e:
                 last_error = e
                 if attempt < retry_count:
-                    delay = retry_delay * (2 ** attempt)
+                    is_429 = _is_rate_limit_error(e)
+                    if is_429:
+                        # Longer backoff for 429s + global throttle
+                        delay = retry_delay * (4 ** attempt) + random.uniform(1.0, 3.0)
+                        await apply_global_throttle(delay)
+                    else:
+                        delay = retry_delay * (2 ** attempt)
                     logger.warning(
                         f"Prompt {idx} attempt {attempt + 1} failed, retrying in {delay:.1f}s: {e}"
                     )
@@ -310,13 +349,17 @@ async def async_process(
     # Process all prompts concurrently
     tasks = [process_single(i, parts) for i, parts in enumerate(all_content_parts)]
 
-    if show_progress:
-        from tqdm.asyncio import tqdm_asyncio
-        raw_results = await tqdm_asyncio.gather(
-            *tasks, desc="Processing prompts", unit="prompt"
-        )
-    else:
-        raw_results = await asyncio.gather(*tasks)
+    try:
+        if show_progress:
+            from tqdm.asyncio import tqdm_asyncio
+            raw_results = await tqdm_asyncio.gather(
+                *tasks, desc="Processing prompts", unit="prompt"
+            )
+        else:
+            raw_results = await asyncio.gather(*tasks)
+    finally:
+        # Restore google_genai logger level
+        _genai_logger.setLevel(_prev_level)
 
     # Sort results by index to preserve prompt order
     raw_results = sorted(raw_results, key=lambda x: x[0])
