@@ -146,6 +146,32 @@ def test_build_generation_config_with_thinking():
     assert config.thinking_config.thinking_budget == 1000
 
 
+def test_build_generation_config_default_disables_thinking():
+    """Default (no args) disables thinking via budget=0, not API default."""
+    config = build_generation_config()
+
+    assert config.thinking_config is not None
+    assert config.thinking_config.thinking_budget == 0
+
+
+def test_build_generation_config_thinking_level_only():
+    """Passing only thinking_level must not collide with default thinking_budget."""
+    config = build_generation_config(thinking_level="low")
+
+    assert config.thinking_config is not None
+    # SDK normalizes str -> ThinkingLevel enum
+    assert str(config.thinking_config.thinking_level).upper().endswith("LOW")
+    assert config.thinking_config.thinking_budget is None
+
+
+def test_build_generation_config_both_thinking_params_raises():
+    """Explicitly passing both thinking_budget and thinking_level still errors."""
+    import pytest
+
+    with pytest.raises(ValueError, match="Cannot specify both"):
+        build_generation_config(thinking_budget=512, thinking_level="low")
+
+
 def test_build_generation_config_custom_params():
     """Test generation config with custom parameters."""
     config = build_generation_config(

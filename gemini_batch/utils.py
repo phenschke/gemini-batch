@@ -23,6 +23,11 @@ import logging
 from . import config
 from .types import TokenStatistics
 
+# Sentinel for build_generation_config to distinguish "user didn't pass thinking_budget"
+# from "user explicitly passed thinking_budget=None". Default stays "thinking disabled"
+# unless thinking_level is supplied.
+_UNSET = object()
+
 # Optional GCS import for Vertex AI support
 try:
     from google.cloud import storage as gcs_storage
@@ -1275,7 +1280,7 @@ def _show_image_popup(img: Image.Image, page_number: int) -> None:
 
 def build_generation_config(
     response_schema: Optional[Union[types.Schema, Type[BaseModel]]] = None,
-    thinking_budget: Optional[int] = 0,
+    thinking_budget: Optional[int] = _UNSET,  # type: ignore[assignment]
     thinking_level: Optional[str] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
@@ -1319,6 +1324,12 @@ def build_generation_config(
     if response_schema is not None:
         gen_config_dict["response_mime_type"] = "application/json"
         gen_config_dict["response_json_schema"] = _transformers.t_schema(client=None, origin=response_schema)
+
+    # Resolve thinking_budget sentinel. Safe default: thinking disabled (0) unless
+    # thinking_level is supplied — never leave both unset, which would let the API
+    # default to costly thinking.
+    if thinking_budget is _UNSET:
+        thinking_budget = None if thinking_level is not None else 0
 
     # Auto-convert thinking_budget=0 to thinking_level="MINIMAL" for gemini-3* models
     is_gemini_3_model = model is not None and model.startswith("gemini-3")
