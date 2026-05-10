@@ -487,9 +487,14 @@ async def async_embed(
         async with semaphore:
             await wait_for_rate_limit()
             # Use native async API via client.aio
+            # NOTE: gemini-embedding-2 aggregates a raw list of strings into a single
+            # embedding. Wrap each text in its own Content so we get one embedding per
+            # input. See https://ai.google.dev/gemini-api/docs/embeddings#migration
             response = await client.client.aio.models.embed_content(
                 model=model,
-                contents=batch,  # Just pass list of strings
+                contents=[
+                    types.Content(parts=[types.Part(text=t)]) for t in batch
+                ],
                 config=embed_config,
             )
 
