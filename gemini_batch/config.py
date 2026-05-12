@@ -51,7 +51,7 @@ DIRECT_CONFIG = {
 # --- Embedding Settings ---
 # Configuration for batch embedding functionality
 EMBEDDING_CONFIG = {
-    "default_model": "gemini-embedding-2-preview",
+    "default_model": "gemini-embedding-2",
     "default_task_type": "RETRIEVAL_DOCUMENT",
     "valid_task_types": {
         "RETRIEVAL_DOCUMENT",

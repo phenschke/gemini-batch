@@ -15,9 +15,12 @@
 results = batch_process(prompts, schema, wait=True)
 
 # Batch Embeddings (50% cost savings)
-embeddings = batch_embed(texts, task_type="RETRIEVAL_DOCUMENT")
+# Note: task_type is only honored by gemini-embedding-001; v2+ silently drops it
+# (use inline prompt prefixes instead). Library logs a WARNING if you pass it.
+embeddings = batch_embed(texts)  # uses default model (gemini-embedding-2)
+embeddings = batch_embed(texts, model="gemini-embedding-001", task_type="RETRIEVAL_DOCUMENT")
 # With reduced dimensions (gemini-embedding-2)
-embeddings = batch_embed(texts, model="gemini-embedding-2-preview", output_dimensionality=768)
+embeddings = batch_embed(texts, model="gemini-embedding-2", output_dimensionality=768)
 normalized = normalize_embeddings(embeddings)  # L2-normalize after reducing dims
 
 # Direct Gemini API (immediate results, full cost)
@@ -167,12 +170,16 @@ Generate embeddings at 50% cost via Gemini Batch API:
 ```python
 from gemini_batch import batch_embed
 
-# Basic usage
-embeddings = batch_embed(
-    texts=["Document 1 content...", "Document 2 content..."],
-    task_type="RETRIEVAL_DOCUMENT",  # or RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, etc.
-)
+# Basic usage (default model: gemini-embedding-2)
+embeddings = batch_embed(texts=["Document 1 content...", "Document 2 content..."])
 # Returns: [[0.123, -0.456, ...], [0.789, -0.012, ...]]  (3072-dim vectors)
+
+# task_type only works on gemini-embedding-001; library logs WARNING if passed with v2+
+embeddings = batch_embed(
+    texts=["doc 1", "doc 2"],
+    model="gemini-embedding-001",
+    task_type="RETRIEVAL_DOCUMENT",
+)
 ```
 
 **Task Types:**
@@ -181,9 +188,11 @@ embeddings = batch_embed(
 - `SEMANTIC_SIMILARITY`: For similarity comparisons
 - `CLASSIFICATION`: For text classification
 - `CLUSTERING`: For clustering tasks
-- `QUESTION_ANSWERING`: For question answering (gemini-embedding-2+)
-- `FACT_VERIFICATION`: For fact verification (gemini-embedding-2+)
-- `CODE_RETRIEVAL_QUERY`: For code retrieval queries (gemini-embedding-2+)
+- `QUESTION_ANSWERING`: For question answering (gemini-embedding-001 only)
+- `FACT_VERIFICATION`: For fact verification (gemini-embedding-001 only)
+- `CODE_RETRIEVAL_QUERY`: For code retrieval queries (gemini-embedding-001 only)
+
+> **`task_type` is silently dropped by gemini-embedding-2+.** Verified empirically: vectors for the same text with different task_type values come back bit-identical. The API expects task conditioning via inline prompt prefixes instead (e.g. `"task: search result | query: {text}"`). The library logs a WARNING when you pass `task_type` with a v2+ model. See https://ai.google.dev/gemini-api/docs/embeddings#migration
 
 **Output Dimensionality:**
 - `batch_embed()`, `embed()`, and `async_embed()` accept `output_dimensionality` to reduce vector size (e.g., 768)
@@ -194,7 +203,7 @@ embeddings = batch_embed(
 - Uses `client.batches.create_embeddings()` (different from text generation's `create()`)
 - JSONL format: `{"key": "0", "request": {"content": {"parts": [{"text": "..."}]}, "task_type": "...", "output_dimensionality": N}}`
 - Result parsing extracts `response["embedding"]["values"]`
-- Model: `gemini-embedding-2-preview` (default), produces 3072-dimensional vectors. Also supports `gemini-embedding-001`.
+- Model: `gemini-embedding-2` (default, GA), produces 3072-dimensional vectors. Also supports `gemini-embedding-001` and the legacy `gemini-embedding-2-preview` alias.
 
 ### Direct API Processing
 

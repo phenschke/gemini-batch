@@ -9,12 +9,27 @@ batch_process() but for immediate results at full cost.
 import asyncio
 import random
 import time
-from typing import Any, Dict, List, Optional, Tuple, Type, Union, get_origin, get_args
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    overload,
+)
 from pathlib import Path
 
 from PIL import Image
 from pydantic import BaseModel
 from google.genai import types as genai_types
+
+T = TypeVar("T", bound=BaseModel)
 
 from . import config
 from .utils import (
@@ -138,6 +153,49 @@ def _extract_metadata(response: Any) -> Optional[Dict[str, Any]]:
     if hasattr(response, 'model_version') and response.model_version:
         metadata['modelVersion'] = response.model_version
     return metadata if metadata else None
+
+
+# --- Overloads for async_process (return type inference) ---
+
+
+@overload
+async def async_process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: None = None,
+    *,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[Optional[str]]: ...
+
+
+@overload
+async def async_process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: Type[T],
+    *,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[Optional[T]]: ...
+
+
+@overload
+async def async_process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: None = None,
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[Optional[str]], List[Optional[Dict[str, Any]]]]: ...
+
+
+@overload
+async def async_process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: Type[T],
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[Optional[T]], List[Optional[Dict[str, Any]]]]: ...
 
 
 async def async_process(
@@ -384,6 +442,49 @@ async def async_process(
     if return_metadata:
         return results, metadata_list
     return results
+
+
+# --- Overloads for process (return type inference) ---
+
+
+@overload
+def process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: None = None,
+    *,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[Optional[str]]: ...
+
+
+@overload
+def process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: Type[T],
+    *,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[Optional[T]]: ...
+
+
+@overload
+def process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: None = None,
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[Optional[str]], List[Optional[Dict[str, Any]]]]: ...
+
+
+@overload
+def process(
+    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
+    schema: Type[T],
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[Optional[T]], List[Optional[Dict[str, Any]]]]: ...
 
 
 def process(

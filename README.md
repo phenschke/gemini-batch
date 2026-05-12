@@ -79,22 +79,25 @@ results = batch_process(prompts, schema)
 **Batch embeddings:** Generate embeddings at 50% cost (Gemini Developer API only)
 ```python
 from gemini_batch import batch_embed
-embeddings = batch_embed(["doc 1", "doc 2"], task_type="RETRIEVAL_DOCUMENT")
+embeddings = batch_embed(["doc 1", "doc 2"])  # default: gemini-embedding-2
 # Returns: [[0.12, -0.45, ...], [0.78, ...]]  (3072-dim)
 ```
 
 **Direct API embeddings:** Immediate results at full cost (when speed matters)
 ```python
 from gemini_batch import embed
-embeddings = embed(["text 1", "text 2"], task_type="RETRIEVAL_QUERY")
+embeddings = embed(["text 1", "text 2"])
 # Returns immediately (no batch job), 3072-dim vectors
 ```
-Task types: `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING`, `QUESTION_ANSWERING`, `FACT_VERIFICATION`, `CODE_RETRIEVAL_QUERY`
 
-**Reduced dimensions & normalization:** Use `output_dimensionality` with `gemini-embedding-2-preview` and normalize:
+> **`task_type` only works on `gemini-embedding-001`.** With the default `gemini-embedding-2` (and any v2+ model), the API silently ignores `task_type` — task conditioning is expected via inline prompt prefixes (e.g. `"task: search result | query: {text}"`). The library logs a WARNING if you pass `task_type` with a v2+ model. See [migration doc](https://ai.google.dev/gemini-api/docs/embeddings#migration).
+
+Task types (only honored by `gemini-embedding-001`): `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING`, `QUESTION_ANSWERING`, `FACT_VERIFICATION`, `CODE_RETRIEVAL_QUERY`
+
+**Reduced dimensions & normalization:** Use `output_dimensionality` with `gemini-embedding-2` and normalize:
 ```python
 from gemini_batch import batch_embed, normalize_embeddings
-embeddings = batch_embed(texts, model="gemini-embedding-2-preview", output_dimensionality=768)
+embeddings = batch_embed(texts, model="gemini-embedding-2", output_dimensionality=768)
 embeddings = normalize_embeddings(embeddings)  # L2-normalize for reduced dims
 ```
 

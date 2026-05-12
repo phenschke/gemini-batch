@@ -483,6 +483,109 @@ class TestAsyncEmbed:
         assert elapsed < 1.0, f"Expected < 1s without rpm, got {elapsed:.2f}s"
 
 
+class TestTaskTypeWarning:
+    """Tests that task_type is flagged when silently dropped by v2+ models."""
+
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_warns_on_task_type_with_v2_model(self, mock_client_class, tmp_path, caplog):
+        """Passing task_type with gemini-embedding-2 logs a WARNING."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            create_embedding_batch_job(
+                ["Test text"],
+                model_name="gemini-embedding-2",
+                task_type="RETRIEVAL_DOCUMENT",
+                jsonl_dir=str(tmp_path),
+                client=mock_client,
+            )
+
+        assert any("silently ignored" in rec.message for rec in caplog.records), \
+            f"Expected 'silently ignored' warning, got: {[r.message for r in caplog.records]}"
+
+    @pytest.mark.asyncio
+    @patch('gemini_batch.embedding.GeminiClient')
+    async def test_warns_on_task_type_with_v2_model_direct(self, mock_client_class, caplog):
+        """Passing task_type to async_embed with v2 model logs a WARNING."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_response = MagicMock()
+        mock_embedding = MagicMock()
+        mock_embedding.values = [0.1, 0.2, 0.3]
+        mock_embedding.statistics = None
+        mock_response.embeddings = [mock_embedding]
+        mock_aio = MagicMock()
+        mock_models = MagicMock()
+        mock_models.embed_content = AsyncMock(return_value=mock_response)
+        mock_aio.models = mock_models
+        mock_client.client.aio = mock_aio
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            await async_embed(
+                ["text1"],
+                model="gemini-embedding-2",
+                task_type="RETRIEVAL_QUERY",
+                show_progress=False,
+            )
+
+        assert any("silently ignored" in rec.message for rec in caplog.records)
+
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_no_warning_for_embedding_001(self, mock_client_class, tmp_path, caplog):
+        """task_type with gemini-embedding-001 does NOT trigger the warning."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            create_embedding_batch_job(
+                ["Test text"],
+                model_name="gemini-embedding-001",
+                task_type="RETRIEVAL_DOCUMENT",
+                jsonl_dir=str(tmp_path),
+                client=mock_client,
+            )
+
+        assert not any("silently ignored" in rec.message for rec in caplog.records)
+
+    @patch('gemini_batch.embedding.GeminiClient')
+    def test_no_warning_when_task_type_not_passed(self, mock_client_class, tmp_path, caplog):
+        """Default behavior (no task_type passed) is silent even on v2 default model."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            create_embedding_batch_job(
+                ["Test text"],
+                jsonl_dir=str(tmp_path),
+                client=mock_client,
+            )
+
+        assert not any("silently ignored" in rec.message for rec in caplog.records)
+
+
 class TestNewTaskTypes:
     """Tests for gemini-embedding-2 task types."""
 

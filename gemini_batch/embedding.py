@@ -8,7 +8,16 @@ Also provides direct API embedding support for immediate results.
 import asyncio
 import json
 import time
-from typing import Union, Optional, List, Dict, Any, Tuple
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+    overload,
+)
 from pathlib import Path
 from google.genai import types
 from tqdm.asyncio import tqdm as async_tqdm
@@ -24,10 +33,31 @@ from .batch import (
 )
 
 
+def _model_honors_task_type(model: str) -> bool:
+    """Only gemini-embedding-001 honors the task_type kwarg.
+
+    All gemini-embedding-2* variants silently drop it; task conditioning
+    must be expressed as inline prompt prefixes instead. See
+    https://ai.google.dev/gemini-api/docs/embeddings#migration
+    """
+    return "embedding-001" in model
+
+
+def _warn_if_task_type_dropped(task_type: Optional[str], model: str) -> None:
+    if task_type is not None and not _model_honors_task_type(model):
+        logger.warning(
+            "task_type=%r is silently ignored by %s. Only gemini-embedding-001 "
+            "honors task_type; v2+ models expect inline prompt prefixes "
+            "(e.g. 'task: search result | query: {text}'). "
+            "See https://ai.google.dev/gemini-api/docs/embeddings#migration",
+            task_type, model,
+        )
+
+
 def create_embedding_batch_job(
     texts: List[str],
     model_name: str = app_config.EMBEDDING_CONFIG["default_model"],
-    task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    task_type: Optional[str] = None,
     output_dimensionality: Optional[int] = None,
     job_display_name: Optional[str] = None,
     jsonl_dir: Optional[str] = None,
@@ -42,9 +72,12 @@ def create_embedding_batch_job(
     Args:
         texts: List of text strings to embed
         model_name: Gemini embedding model to use
-        task_type: Embedding task type (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY,
+        task_type: Embedding task type. Only honored by gemini-embedding-001;
+            silently ignored by gemini-embedding-2+ (use inline prompt prefixes
+            instead). Valid values: RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY,
             SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING,
-            QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY)
+            QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY.
+            See https://ai.google.dev/gemini-api/docs/embeddings#migration
         output_dimensionality: Optional reduced embedding dimension (e.g., 768).
             When using reduced dimensions with gemini-embedding-2, vectors may
             need manual L2 normalization (see normalize_embeddings()).
@@ -72,11 +105,17 @@ def create_embedding_batch_job(
             "GOOGLE_GENAI_USE_VERTEXAI environment variable."
         )
 
+    # Warn if task_type will be silently dropped by the model (v2+)
+    _warn_if_task_type_dropped(task_type, model_name)
+
+    # Resolve default after warning check so we can distinguish user-passed from default
+    effective_task_type = task_type or app_config.EMBEDDING_CONFIG["default_task_type"]
+
     # Validate task_type
     valid_task_types = app_config.EMBEDDING_CONFIG["valid_task_types"]
-    if task_type not in valid_task_types:
+    if effective_task_type not in valid_task_types:
         raise ValueError(
-            f"Invalid task_type '{task_type}'. Must be one of: {valid_task_types}"
+            f"Invalid task_type '{effective_task_type}'. Must be one of: {valid_task_types}"
         )
 
     # Build requests with embedding format
@@ -84,7 +123,7 @@ def create_embedding_batch_job(
     for i, text in enumerate(texts):
         request_body = {
             "content": {"parts": [{"text": text}]},
-            "task_type": task_type,
+            "task_type": effective_task_type,
         }
         if output_dimensionality is not None:
             request_body["output_dimensionality"] = output_dimensionality
@@ -202,6 +241,23 @@ def download_embedding_results(
             return str(output_path)
 
     raise ValueError("Batch job does not have an associated results file.")
+
+
+# --- Overloads for parse_embedding_results (return type inference) ---
+
+
+@overload
+def parse_embedding_results(
+    results: Union[str, List[Dict]],
+    return_metadata: Literal[False] = False,
+) -> List[Optional[List[float]]]: ...
+
+
+@overload
+def parse_embedding_results(
+    results: Union[str, List[Dict]],
+    return_metadata: Literal[True],
+) -> Tuple[List[Optional[List[float]]], List[Optional[Dict[str, Any]]]]: ...
 
 
 def parse_embedding_results(
@@ -355,12 +411,37 @@ def parse_embedding_results(
     return embeddings
 
 
+# --- Overloads for async_embed (return type inference) ---
+
+
+@overload
+async def async_embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[List[float]]: ...
+
+
+@overload
+async def async_embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[List[float]], List[Dict[str, Any]]]: ...
+
+
 async def async_embed(
     texts: List[str],
     model: str = app_config.EMBEDDING_CONFIG["default_model"],
-    task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    task_type: Optional[str] = None,
     output_dimensionality: Optional[int] = None,
-    title: Optional[str] = None,
     return_metadata: bool = False,
     max_concurrent: int = 10,
     rpm: Optional[int] = None,
@@ -382,8 +463,12 @@ async def async_embed(
 
     Args:
         texts: List of text strings to embed
-        model: Gemini embedding model to use (default: gemini-embedding-2-preview)
-        task_type: Embedding task type. Valid values:
+        model: Gemini embedding model to use (default: gemini-embedding-2)
+        task_type: Embedding task type. Only honored by gemini-embedding-001;
+            silently ignored by gemini-embedding-2+ (use inline prompt prefixes
+            instead, e.g. "task: search result | query: {text}"). See
+            https://ai.google.dev/gemini-api/docs/embeddings#migration
+            Valid values:
             - "RETRIEVAL_DOCUMENT": For documents to be retrieved
             - "RETRIEVAL_QUERY": For search queries
             - "SEMANTIC_SIMILARITY": For similarity comparisons
@@ -395,7 +480,6 @@ async def async_embed(
         output_dimensionality: Optional reduced embedding dimension (e.g., 768).
             When using reduced dimensions with gemini-embedding-2, vectors may
             need manual L2 normalization (see normalize_embeddings()).
-        title: Optional title describing the content
         return_metadata: If True, returns tuple of (embeddings, metadata_list)
         max_concurrent: Maximum concurrent API requests
         rpm: Maximum requests per minute. If None, no rate limiting beyond max_concurrent.
@@ -415,9 +499,10 @@ async def async_embed(
         >>> # Basic usage
         >>> embeddings = await async_embed(["Text 1", "Text 2"])
         >>>
-        >>> # With task type
+        >>> # With task type (only effective on gemini-embedding-001)
         >>> query_emb = await async_embed(
         ...     ["search query"],
+        ...     model="gemini-embedding-001",
         ...     task_type="RETRIEVAL_QUERY"
         ... )
         >>>
@@ -427,11 +512,17 @@ async def async_embed(
         ...     output_dimensionality=768
         ... )
     """
+    # Warn if task_type will be silently dropped by the model (v2+)
+    _warn_if_task_type_dropped(task_type, model)
+
+    # Resolve default after warning check so we can distinguish user-passed from default
+    effective_task_type = task_type or app_config.EMBEDDING_CONFIG["default_task_type"]
+
     # Validate task_type
     valid_task_types = app_config.EMBEDDING_CONFIG["valid_task_types"]
-    if task_type not in valid_task_types:
+    if effective_task_type not in valid_task_types:
         raise ValueError(
-            f"Invalid task_type '{task_type}'. Must be one of: {valid_task_types}"
+            f"Invalid task_type '{effective_task_type}'. Must be one of: {valid_task_types}"
         )
 
     # Initialize client (single client for all batches - async is thread-safe)
@@ -442,11 +533,9 @@ async def async_embed(
     )
 
     # Build config
-    config_kwargs = {"task_type": task_type}
+    config_kwargs: Dict[str, Any] = {"task_type": effective_task_type}
     if output_dimensionality is not None:
         config_kwargs["output_dimensionality"] = output_dimensionality
-    if title is not None:
-        config_kwargs["title"] = title
 
     embed_config = types.EmbedContentConfig(**config_kwargs)
 
@@ -564,12 +653,37 @@ async def async_embed(
     return all_embeddings
 
 
+# --- Overloads for embed (return type inference) ---
+
+
+@overload
+def embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[List[float]]: ...
+
+
+@overload
+def embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[List[float]], List[Dict[str, Any]]]: ...
+
+
 def embed(
     texts: List[str],
     model: str = app_config.EMBEDDING_CONFIG["default_model"],
-    task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    task_type: Optional[str] = None,
     output_dimensionality: Optional[int] = None,
-    title: Optional[str] = None,
     return_metadata: bool = False,
     max_concurrent: int = 10,
     rpm: Optional[int] = None,
@@ -597,9 +711,10 @@ def embed(
         >>> # Basic usage
         >>> embeddings = embed(["Text 1", "Text 2"])
         >>>
-        >>> # With task type
+        >>> # With task type (only effective on gemini-embedding-001)
         >>> query_emb = embed(
         ...     ["search query"],
+        ...     model="gemini-embedding-001",
         ...     task_type="RETRIEVAL_QUERY"
         ... )
         >>>
@@ -614,7 +729,6 @@ def embed(
         model=model,
         task_type=task_type,
         output_dimensionality=output_dimensionality,
-        title=title,
         return_metadata=return_metadata,
         max_concurrent=max_concurrent,
         rpm=rpm,
@@ -626,10 +740,51 @@ def embed(
     ))
 
 
+# --- Overloads for batch_embed (return type inference) ---
+
+
+@overload
+def batch_embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    *,
+    wait: Literal[False],
+    **kwargs: Any,
+) -> str: ...
+
+
+@overload
+def batch_embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    wait: Literal[True] = True,
+    *,
+    return_metadata: Literal[False] = False,
+    **kwargs: Any,
+) -> List[Optional[List[float]]]: ...
+
+
+@overload
+def batch_embed(
+    texts: List[str],
+    model: str = ...,
+    task_type: Optional[str] = ...,
+    output_dimensionality: Optional[int] = ...,
+    wait: Literal[True] = True,
+    *,
+    return_metadata: Literal[True],
+    **kwargs: Any,
+) -> Tuple[List[Optional[List[float]]], List[Optional[Dict[str, Any]]]]: ...
+
+
 def batch_embed(
     texts: List[str],
     model: str = app_config.EMBEDDING_CONFIG["default_model"],
-    task_type: str = app_config.EMBEDDING_CONFIG["default_task_type"],
+    task_type: Optional[str] = None,
     output_dimensionality: Optional[int] = None,
     wait: bool = True,
     job_display_name: Optional[str] = None,
@@ -655,8 +810,12 @@ def batch_embed(
 
     Args:
         texts: List of text strings to embed
-        model: Gemini embedding model to use (default: gemini-embedding-2-preview)
-        task_type: Embedding task type. Valid values:
+        model: Gemini embedding model to use (default: gemini-embedding-2)
+        task_type: Embedding task type. Only honored by gemini-embedding-001;
+            silently ignored by gemini-embedding-2+ (use inline prompt prefixes
+            instead). See
+            https://ai.google.dev/gemini-api/docs/embeddings#migration
+            Valid values:
             - "RETRIEVAL_DOCUMENT": For documents to be retrieved
             - "RETRIEVAL_QUERY": For search queries
             - "SEMANTIC_SIMILARITY": For similarity comparisons
@@ -694,9 +853,10 @@ def batch_embed(
         >>> print(len(embeddings[0]))  # Embedding dimension
         768
         >>>
-        >>> # With task type for search
+        >>> # With task type for search (only effective on gemini-embedding-001)
         >>> query_embeddings = batch_embed(
         ...     ["search query"],
+        ...     model="gemini-embedding-001",
         ...     task_type="RETRIEVAL_QUERY"
         ... )
         >>>
