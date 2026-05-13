@@ -11,7 +11,7 @@ Supports both:
 For Vertex AI, install with: pip install gemini-batch[vertexai]
 """
 
-from typing import Union, Optional, List, Type, Dict, Any, get_origin, get_args
+from typing import Union, Optional, List, Literal, Type, Dict, Any, get_origin, get_args
 from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
@@ -38,6 +38,8 @@ from .batch import (
 )
 from .aggregation import aggregate_records
 from .utils import (
+    _UNSET,
+    _warn_if_set,
     calculate_token_statistics,
     normalize_embeddings,
     GeminiClient,
@@ -67,7 +69,7 @@ from .direct import async_process, process
 if not logging.root.handlers:
     utils.setup_logging()
 
-__version__ = "0.12.0"
+__version__ = "0.14.0"
 __all__ = [
     "batch_process",
     # Batch embeddings
@@ -109,19 +111,26 @@ def batch_process(
     prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
     schema: Optional[Type[BaseModel]] = None,
     model: str = config.MODEL_CONFIG["default_model"],
-    wait: bool = True,
-    keys: Optional[List[str]] = None,
-    job_display_name: Optional[str] = None,
-    poll_interval: int = config.BATCH_CONFIG["poll_interval"],
-    output_dir: Optional[str] = None,
-    jsonl_dir: Optional[str] = None,
+    mode: Literal["batch", "direct"] = "batch",
+    # batch-only (sentinel defaults so we can warn when set in direct mode)
+    wait: Any = _UNSET,
+    keys: Any = _UNSET,
+    job_display_name: Any = _UNSET,
+    poll_interval: Any = _UNSET,
+    output_dir: Any = _UNSET,
+    jsonl_dir: Any = _UNSET,
+    resume_from: Any = _UNSET,
+    # direct-only (sentinel defaults so we can warn when set in batch mode)
+    max_concurrent: Any = _UNSET,
+    rpm: Any = _UNSET,
+    retry_count: Any = _UNSET,
+    retry_delay: Any = _UNSET,
+    # shared
     return_metadata: bool = False,
     media_resolution: Optional[str] = None,
     part_media_resolution: Optional[str] = None,
     max_upload_workers: int = 10,
     show_progress: bool = True,
-    # Resume from failed job
-    resume_from: Optional[str] = None,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
@@ -152,7 +161,15 @@ def batch_process(
             Each inner list represents one batch request with mixed text/image content.
         schema: Optional Pydantic BaseModel class for structured output. If None, returns raw text.
         model: Gemini model to use (default: gemini-2.5-flash)
+        mode: Which API path to use. "batch" (default) uses the Gemini Batch API
+            (50% discount, polled job). "direct" dispatches to process() / async_process()
+            for immediate results at full cost. Parameters that apply only to the other
+            mode are ignored with a logged warning, so call sites can flip mode without
+            rewriting other arguments. Direct-only params: max_concurrent, rpm,
+            retry_count, retry_delay. Batch-only params: wait, keys, job_display_name,
+            poll_interval, output_dir, jsonl_dir, resume_from.
         wait: If True, wait for completion and return results. If False, return job name.
+            (batch mode only)
         keys: Optional list of unique string identifiers for each prompt. When provided:
             - Must have same length as prompts
             - Each key must be unique
@@ -251,7 +268,60 @@ def batch_process(
         ...     resume_from="projects/.../batchJobs/123",  # or GCS URI
         ...     vertexai=True,
         ... )
+        >>>
+        >>> # Direct API mode (immediate results, full cost) - same call site
+        >>> results = batch_process(prompts, Recipe, mode="direct")
     """
+    if mode not in ("batch", "direct"):
+        raise ValueError(f"mode must be 'batch' or 'direct', got {mode!r}")
+
+    if mode == "direct":
+        _warn_if_set(
+            "batch-only params ignored in mode='direct'",
+            {
+                "wait": wait, "keys": keys, "job_display_name": job_display_name,
+                "poll_interval": poll_interval, "output_dir": output_dir,
+                "jsonl_dir": jsonl_dir, "resume_from": resume_from,
+            },
+        )
+        direct_kwargs: Dict[str, Any] = {
+            "model": model,
+            "return_metadata": return_metadata,
+            "media_resolution": media_resolution,
+            "part_media_resolution": part_media_resolution,
+            "max_upload_workers": max_upload_workers,
+            "show_progress": show_progress,
+            "vertexai": vertexai,
+            "project": project,
+            "location": location,
+            "gcs_bucket": gcs_bucket,
+        }
+        for k, v in (
+            ("max_concurrent", max_concurrent),
+            ("rpm", rpm),
+            ("retry_count", retry_count),
+            ("retry_delay", retry_delay),
+        ):
+            if v is not _UNSET:
+                direct_kwargs[k] = v
+        return process(prompts, schema, **direct_kwargs, **generation_kwargs)
+
+    # mode == "batch": warn about direct-only params, then resolve sentinels
+    _warn_if_set(
+        "direct-only params ignored in mode='batch'",
+        {
+            "max_concurrent": max_concurrent, "rpm": rpm,
+            "retry_count": retry_count, "retry_delay": retry_delay,
+        },
+    )
+    wait = True if wait is _UNSET else wait
+    keys = None if keys is _UNSET else keys
+    job_display_name = None if job_display_name is _UNSET else job_display_name
+    poll_interval = config.BATCH_CONFIG["poll_interval"] if poll_interval is _UNSET else poll_interval
+    output_dir = None if output_dir is _UNSET else output_dir
+    jsonl_dir = None if jsonl_dir is _UNSET else jsonl_dir
+    resume_from = None if resume_from is _UNSET else resume_from
+
     import asyncio
 
     # Initialize Gemini client (auto-detects backend from params or env vars)

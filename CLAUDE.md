@@ -14,16 +14,23 @@
 # Gemini Batch API (50% cost savings, slower)
 results = batch_process(prompts, schema, wait=True)
 
+# Same call site, direct API path — toggle with mode=
+results = batch_process(prompts, schema, mode="direct")  # immediate, full cost
+# Params that only apply to the other mode (e.g. rpm with mode="batch", or wait
+# with mode="direct") are ignored with a logged WARNING — flip the flag, leave
+# the rest of the call alone.
+
 # Batch Embeddings (50% cost savings)
 # Note: task_type is only honored by gemini-embedding-001; v2+ silently drops it
 # (use inline prompt prefixes instead). Library logs a WARNING if you pass it.
 embeddings = batch_embed(texts)  # uses default model (gemini-embedding-2)
 embeddings = batch_embed(texts, model="gemini-embedding-001", task_type="RETRIEVAL_DOCUMENT")
+embeddings = batch_embed(texts, mode="direct")  # direct API path, same flag pattern
 # With reduced dimensions (gemini-embedding-2)
 embeddings = batch_embed(texts, model="gemini-embedding-2", output_dimensionality=768)
 normalized = normalize_embeddings(embeddings)  # L2-normalize after reducing dims
 
-# Direct Gemini API (immediate results, full cost)
+# Direct Gemini API (immediate results, full cost) - low-level entry points
 results = await async_process(prompts, schema, max_concurrent=10)
 # Or sync wrapper:
 results = process(prompts, schema)

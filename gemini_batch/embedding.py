@@ -8,13 +8,15 @@ Also provides direct API embedding support for immediate results.
 import asyncio
 import json
 import time
-from typing import Union, Optional, List, Dict, Any, Tuple
+from typing import Union, Optional, List, Literal, Dict, Any, Tuple
 from pathlib import Path
 from google.genai import types
 from tqdm.asyncio import tqdm as async_tqdm
 
 from . import config as app_config
 from .utils import (
+    _UNSET,
+    _warn_if_set,
     GeminiClient,
     logger,
 )
@@ -667,17 +669,25 @@ def batch_embed(
     model: str = app_config.EMBEDDING_CONFIG["default_model"],
     task_type: Optional[str] = None,
     output_dimensionality: Optional[int] = None,
-    wait: bool = True,
-    job_display_name: Optional[str] = None,
-    poll_interval: int = app_config.BATCH_CONFIG["poll_interval"],
-    output_dir: Optional[str] = None,
-    jsonl_dir: Optional[str] = None,
+    mode: Literal["batch", "direct"] = "batch",
+    # batch-only (sentinel defaults so we can warn when set in direct mode)
+    wait: Any = _UNSET,
+    job_display_name: Any = _UNSET,
+    poll_interval: Any = _UNSET,
+    output_dir: Any = _UNSET,
+    jsonl_dir: Any = _UNSET,
+    gcs_bucket: Any = _UNSET,
+    # direct-only (sentinel defaults so we can warn when set in batch mode)
+    max_concurrent: Any = _UNSET,
+    rpm: Any = _UNSET,
+    batch_size: Any = _UNSET,
+    show_progress: Any = _UNSET,
+    # shared
     return_metadata: bool = False,
     # Vertex AI parameters
     vertexai: Optional[bool] = None,
     project: Optional[str] = None,
     location: Optional[str] = None,
-    gcs_bucket: Optional[str] = None,
 ) -> Union[List[List[float]], str, Tuple[List[List[float]], List[Dict]]]:
     """
     Generate embeddings for texts through Gemini Batch API at 50% cost.
@@ -708,7 +718,15 @@ def batch_embed(
         output_dimensionality: Optional reduced embedding dimension (e.g., 768).
             When using reduced dimensions with gemini-embedding-2, vectors may
             need manual L2 normalization (see normalize_embeddings()).
+        mode: Which API path to use. "batch" (default) uses the Gemini Batch API
+            (50% discount, polled job). "direct" dispatches to embed() / async_embed()
+            for immediate results at full cost. Parameters that apply only to the other
+            mode are ignored with a logged warning, so call sites can flip mode without
+            rewriting other arguments. Direct-only params: max_concurrent, rpm,
+            batch_size, show_progress. Batch-only params: wait, job_display_name,
+            poll_interval, output_dir, jsonl_dir, gcs_bucket.
         wait: If True, wait for completion and return results. If False, return job name.
+            (batch mode only)
         job_display_name: Optional display name for the batch job
         poll_interval: Seconds between job status checks (if wait=True)
         output_dir: Directory to save results (defaults to .gemini_batch/)
@@ -744,7 +762,56 @@ def batch_embed(
         >>> # Async mode
         >>> job_name = batch_embed(texts, wait=False)
         >>> # ... check status later ...
+        >>>
+        >>> # Direct API mode (immediate results, full cost) - same call site
+        >>> embeddings = batch_embed(texts, mode="direct")
     """
+    if mode not in ("batch", "direct"):
+        raise ValueError(f"mode must be 'batch' or 'direct', got {mode!r}")
+
+    if mode == "direct":
+        _warn_if_set(
+            "batch-only params ignored in mode='direct'",
+            {
+                "wait": wait, "job_display_name": job_display_name,
+                "poll_interval": poll_interval, "output_dir": output_dir,
+                "jsonl_dir": jsonl_dir, "gcs_bucket": gcs_bucket,
+            },
+        )
+        direct_kwargs: Dict[str, Any] = {
+            "model": model,
+            "task_type": task_type,
+            "output_dimensionality": output_dimensionality,
+            "return_metadata": return_metadata,
+            "vertexai": vertexai,
+            "project": project,
+            "location": location,
+        }
+        for k, v in (
+            ("max_concurrent", max_concurrent),
+            ("rpm", rpm),
+            ("batch_size", batch_size),
+            ("show_progress", show_progress),
+        ):
+            if v is not _UNSET:
+                direct_kwargs[k] = v
+        return embed(texts, **direct_kwargs)
+
+    # mode == "batch": warn about direct-only params, then resolve sentinels
+    _warn_if_set(
+        "direct-only params ignored in mode='batch'",
+        {
+            "max_concurrent": max_concurrent, "rpm": rpm,
+            "batch_size": batch_size, "show_progress": show_progress,
+        },
+    )
+    wait = True if wait is _UNSET else wait
+    job_display_name = None if job_display_name is _UNSET else job_display_name
+    poll_interval = app_config.BATCH_CONFIG["poll_interval"] if poll_interval is _UNSET else poll_interval
+    output_dir = None if output_dir is _UNSET else output_dir
+    jsonl_dir = None if jsonl_dir is _UNSET else jsonl_dir
+    gcs_bucket = None if gcs_bucket is _UNSET else gcs_bucket
+
     # Initialize Gemini client (auto-detects backend from params or env vars)
     gemini_client = GeminiClient(
         vertexai=vertexai,

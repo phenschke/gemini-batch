@@ -49,6 +49,13 @@ except ImportError:
 logger = logging.getLogger("gemini_batch")
 logger.addHandler(logging.NullHandler())
 
+
+def _warn_if_set(prefix, params):
+    """Emit a single warning listing any sentinel-defaulted params the caller set."""
+    bad = [k for k, v in params.items() if v is not _UNSET]
+    if bad:
+        logger.warning(f"{prefix}: {', '.join(bad)}")
+
 # Suppress verbose HTTP request logs from httpx/httpcore
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -2319,3 +2319,120 @@ class TestBatchProcessWithKeys:
 
         assert request1["key"] == "0"
         assert request2["key"] == "1"
+
+
+class TestBatchProcessModeParam:
+    """Tests for the `mode` parameter on batch_process."""
+
+    def test_invalid_mode_raises(self):
+        from gemini_batch import batch_process
+
+        with pytest.raises(ValueError, match="mode must be 'batch' or 'direct'"):
+            batch_process([["hi"]], mode="invalid")
+
+    @patch("gemini_batch.process")
+    def test_mode_direct_dispatches_to_process(self, mock_process):
+        from gemini_batch import batch_process
+
+        mock_process.return_value = ["result"]
+        prompts = [["What is 2+2?"]]
+
+        result = batch_process(prompts, TestSchema, mode="direct")
+
+        assert result == ["result"]
+        mock_process.assert_called_once()
+        args, kwargs = mock_process.call_args
+        assert args[0] is prompts
+        assert args[1] is TestSchema
+        # Shared params forwarded with their real defaults
+        assert kwargs["model"] is not None
+        assert kwargs["return_metadata"] is False
+        # No batch-only params leak
+        assert "wait" not in kwargs
+        assert "poll_interval" not in kwargs
+        assert "keys" not in kwargs
+        assert "resume_from" not in kwargs
+
+    @patch("gemini_batch.process")
+    def test_mode_direct_forwards_direct_only_params(self, mock_process):
+        from gemini_batch import batch_process
+
+        mock_process.return_value = []
+        batch_process(
+            [["hi"]],
+            TestSchema,
+            mode="direct",
+            max_concurrent=42,
+            rpm=90,
+            retry_count=7,
+            retry_delay=1.5,
+        )
+
+        _, kwargs = mock_process.call_args
+        assert kwargs["max_concurrent"] == 42
+        assert kwargs["rpm"] == 90
+        assert kwargs["retry_count"] == 7
+        assert kwargs["retry_delay"] == 1.5
+
+    @patch("gemini_batch.process")
+    def test_mode_direct_warns_on_batch_only_params(self, mock_process, caplog):
+        from gemini_batch import batch_process
+
+        mock_process.return_value = []
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            batch_process([["hi"]], mode="direct", wait=False, poll_interval=30)
+
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "batch-only params ignored in mode='direct'" in warning_text
+        assert "wait" in warning_text
+        assert "poll_interval" in warning_text
+
+    @patch("gemini_batch.utils.GeminiClient")
+    def test_mode_batch_warns_on_direct_only_params(self, mock_client_class, tmp_path, caplog):
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            batch_process(
+                [["hi"]],
+                TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+                rpm=60,
+                max_concurrent=8,
+            )
+
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "direct-only params ignored in mode='batch'" in warning_text
+        assert "rpm" in warning_text
+        assert "max_concurrent" in warning_text
+
+    @patch("gemini_batch.utils.GeminiClient")
+    def test_mode_batch_no_warning_when_clean(self, mock_client_class, tmp_path, caplog):
+        """Default-shaped call must not produce any mode-mismatch warnings."""
+        from gemini_batch import batch_process
+
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/test-job"
+        mock_client.client.batches.create.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            batch_process(
+                [["hi"]],
+                TestSchema,
+                wait=False,
+                jsonl_dir=str(tmp_path),
+            )
+
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "direct-only params ignored" not in warning_text
+        assert "batch-only params ignored" not in warning_text

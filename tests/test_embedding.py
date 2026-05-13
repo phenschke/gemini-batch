@@ -713,3 +713,110 @@ class TestOutputDimensionality:
         mock_create.assert_called_once()
         call_kwargs = mock_create.call_args
         assert call_kwargs.kwargs.get("output_dimensionality") == 256
+
+
+class TestBatchEmbedModeParam:
+    """Tests for the `mode` parameter on batch_embed."""
+
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError, match="mode must be 'batch' or 'direct'"):
+            batch_embed(["hi"], mode="invalid")
+
+    @patch("gemini_batch.embedding.embed")
+    def test_mode_direct_dispatches_to_embed(self, mock_embed):
+        mock_embed.return_value = [[0.1, 0.2]]
+        texts = ["doc 1"]
+
+        result = batch_embed(texts, mode="direct")
+
+        assert result == [[0.1, 0.2]]
+        mock_embed.assert_called_once()
+        args, kwargs = mock_embed.call_args
+        assert args[0] is texts
+        assert kwargs["return_metadata"] is False
+        # No batch-only params leak
+        assert "wait" not in kwargs
+        assert "poll_interval" not in kwargs
+        assert "jsonl_dir" not in kwargs
+        assert "gcs_bucket" not in kwargs
+
+    @patch("gemini_batch.embedding.embed")
+    def test_mode_direct_forwards_direct_only_params(self, mock_embed):
+        mock_embed.return_value = []
+
+        batch_embed(
+            ["doc 1"],
+            mode="direct",
+            max_concurrent=5,
+            rpm=120,
+            batch_size=100,
+            show_progress=False,
+        )
+
+        _, kwargs = mock_embed.call_args
+        assert kwargs["max_concurrent"] == 5
+        assert kwargs["rpm"] == 120
+        assert kwargs["batch_size"] == 100
+        assert kwargs["show_progress"] is False
+
+    @patch("gemini_batch.embedding.embed")
+    def test_mode_direct_warns_on_batch_only_params(self, mock_embed, caplog):
+        mock_embed.return_value = []
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            batch_embed(["doc 1"], mode="direct", wait=False, poll_interval=30)
+
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "batch-only params ignored in mode='direct'" in warning_text
+        assert "wait" in warning_text
+        assert "poll_interval" in warning_text
+
+    @patch("gemini_batch.embedding.GeminiClient")
+    def test_mode_batch_warns_on_direct_only_params(self, mock_client_class, tmp_path, caplog):
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            batch_embed(
+                ["doc 1"],
+                wait=False,
+                jsonl_dir=str(tmp_path),
+                rpm=60,
+                max_concurrent=8,
+            )
+
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "direct-only params ignored in mode='batch'" in warning_text
+        assert "rpm" in warning_text
+        assert "max_concurrent" in warning_text
+
+    @patch("gemini_batch.embedding.GeminiClient")
+    def test_mode_batch_no_warning_when_clean(self, mock_client_class, tmp_path, caplog):
+        """Default-shaped batch call produces no mode-mismatch warnings."""
+        mock_client = MagicMock()
+        mock_client.vertexai = False
+        mock_batch_job = MagicMock()
+        mock_batch_job.name = "batches/embed-job-123"
+        mock_uploaded_file = MagicMock()
+        mock_uploaded_file.name = "files/uploaded-123"
+        mock_client.client.files.upload.return_value = mock_uploaded_file
+        mock_client.client.batches.create_embeddings.return_value = mock_batch_job
+        mock_client_class.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="gemini_batch"):
+            batch_embed(
+                ["doc 1"],
+                wait=False,
+                jsonl_dir=str(tmp_path),
+            )
+
+        warning_text = " ".join(r.message for r in caplog.records)
+        assert "direct-only params ignored" not in warning_text
+        assert "batch-only params ignored" not in warning_text
