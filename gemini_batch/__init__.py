@@ -11,20 +11,7 @@ Supports both:
 For Vertex AI, install with: pip install gemini-batch[vertexai]
 """
 
-from typing import (
-    Any,
-    Dict,
-    List,
-    Literal,
-    Optional,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-    get_args,
-    get_origin,
-    overload,
-)
+from typing import Union, Optional, List, Type, Dict, Any, get_origin, get_args
 from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
@@ -33,8 +20,6 @@ import io
 import time
 import json
 import logging
-
-T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -118,63 +103,6 @@ __all__ = [
     "download_from_gcs",
     "list_gcs_blobs",
 ]
-
-
-# --- Overloads for batch_process (return type inference) ---
-
-
-@overload
-def batch_process(
-    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
-    schema: Optional[Type[BaseModel]] = None,
-    *,
-    wait: Literal[False],
-    **kwargs: Any,
-) -> str: ...
-
-
-@overload
-def batch_process(
-    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
-    schema: None = None,
-    *,
-    wait: Literal[True] = True,
-    return_metadata: Literal[False] = False,
-    **kwargs: Any,
-) -> List[Optional[str]]: ...
-
-
-@overload
-def batch_process(
-    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
-    schema: Type[T],
-    *,
-    wait: Literal[True] = True,
-    return_metadata: Literal[False] = False,
-    **kwargs: Any,
-) -> List[Optional[T]]: ...
-
-
-@overload
-def batch_process(
-    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
-    schema: None = None,
-    *,
-    wait: Literal[True] = True,
-    return_metadata: Literal[True],
-    **kwargs: Any,
-) -> Tuple[List[Optional[str]], List[Optional[Dict[str, Any]]]]: ...
-
-
-@overload
-def batch_process(
-    prompts: List[List[Union[str, Path, Image.Image, bytes, genai_types.Part]]],
-    schema: Type[T],
-    *,
-    wait: Literal[True] = True,
-    return_metadata: Literal[True],
-    **kwargs: Any,
-) -> Tuple[List[Optional[T]], List[Optional[Dict[str, Any]]]]: ...
 
 
 def batch_process(

@@ -5,23 +5,10 @@ Batch processing functionality for gemini-batch library.
 import json
 import re
 import time
-from typing import (
-    Any,
-    Dict,
-    List,
-    Literal,
-    Optional,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-    overload,
-)
+from typing import Union, Optional, List, Type, Any, Dict
 from pathlib import Path
 from google.genai import types
 from pydantic import BaseModel, ValidationError
-
-T = TypeVar("T", bound=BaseModel)
 
 from . import config as app_config
 from .utils import (
@@ -618,47 +605,6 @@ def get_inline_results(
             })
 
     return results
-
-
-# --- Overloads for parse_batch_results (return type inference) ---
-
-
-@overload
-def parse_batch_results(
-    results: Union[str, List[Dict]],
-    schema: None = None,
-    validate: bool = True,
-    return_metadata: Literal[False] = False,
-) -> List[Optional[str]]: ...
-
-
-@overload
-def parse_batch_results(
-    results: Union[str, List[Dict]],
-    schema: Type[T],
-    validate: bool = True,
-    return_metadata: Literal[False] = False,
-) -> List[Optional[T]]: ...
-
-
-@overload
-def parse_batch_results(
-    results: Union[str, List[Dict]],
-    schema: None = None,
-    validate: bool = True,
-    *,
-    return_metadata: Literal[True],
-) -> Tuple[List[Optional[str]], List[Optional[Dict[str, Any]]]]: ...
-
-
-@overload
-def parse_batch_results(
-    results: Union[str, List[Dict]],
-    schema: Type[T],
-    validate: bool = True,
-    *,
-    return_metadata: Literal[True],
-) -> Tuple[List[Optional[T]], List[Optional[Dict[str, Any]]]]: ...
 
 
 def parse_batch_results(

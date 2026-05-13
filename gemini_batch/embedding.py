@@ -8,16 +8,7 @@ Also provides direct API embedding support for immediate results.
 import asyncio
 import json
 import time
-from typing import (
-    Any,
-    Dict,
-    List,
-    Literal,
-    Optional,
-    Tuple,
-    Union,
-    overload,
-)
+from typing import Union, Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from google.genai import types
 from tqdm.asyncio import tqdm as async_tqdm
@@ -243,23 +234,6 @@ def download_embedding_results(
     raise ValueError("Batch job does not have an associated results file.")
 
 
-# --- Overloads for parse_embedding_results (return type inference) ---
-
-
-@overload
-def parse_embedding_results(
-    results: Union[str, List[Dict]],
-    return_metadata: Literal[False] = False,
-) -> List[Optional[List[float]]]: ...
-
-
-@overload
-def parse_embedding_results(
-    results: Union[str, List[Dict]],
-    return_metadata: Literal[True],
-) -> Tuple[List[Optional[List[float]]], List[Optional[Dict[str, Any]]]]: ...
-
-
 def parse_embedding_results(
     results: Union[str, List[Dict]],
     return_metadata: bool = False
@@ -409,32 +383,6 @@ def parse_embedding_results(
     if return_metadata:
         return embeddings, metadata_list
     return embeddings
-
-
-# --- Overloads for async_embed (return type inference) ---
-
-
-@overload
-async def async_embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    return_metadata: Literal[False] = False,
-    **kwargs: Any,
-) -> List[List[float]]: ...
-
-
-@overload
-async def async_embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    *,
-    return_metadata: Literal[True],
-    **kwargs: Any,
-) -> Tuple[List[List[float]], List[Dict[str, Any]]]: ...
 
 
 async def async_embed(
@@ -653,32 +601,6 @@ async def async_embed(
     return all_embeddings
 
 
-# --- Overloads for embed (return type inference) ---
-
-
-@overload
-def embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    return_metadata: Literal[False] = False,
-    **kwargs: Any,
-) -> List[List[float]]: ...
-
-
-@overload
-def embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    *,
-    return_metadata: Literal[True],
-    **kwargs: Any,
-) -> Tuple[List[List[float]], List[Dict[str, Any]]]: ...
-
-
 def embed(
     texts: List[str],
     model: str = app_config.EMBEDDING_CONFIG["default_model"],
@@ -738,47 +660,6 @@ def embed(
         project=project,
         location=location,
     ))
-
-
-# --- Overloads for batch_embed (return type inference) ---
-
-
-@overload
-def batch_embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    *,
-    wait: Literal[False],
-    **kwargs: Any,
-) -> str: ...
-
-
-@overload
-def batch_embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    wait: Literal[True] = True,
-    *,
-    return_metadata: Literal[False] = False,
-    **kwargs: Any,
-) -> List[Optional[List[float]]]: ...
-
-
-@overload
-def batch_embed(
-    texts: List[str],
-    model: str = ...,
-    task_type: Optional[str] = ...,
-    output_dimensionality: Optional[int] = ...,
-    wait: Literal[True] = True,
-    *,
-    return_metadata: Literal[True],
-    **kwargs: Any,
-) -> Tuple[List[Optional[List[float]]], List[Optional[Dict[str, Any]]]]: ...
 
 
 def batch_embed(
