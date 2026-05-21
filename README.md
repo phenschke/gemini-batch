@@ -53,6 +53,13 @@ job_name = batch_process(prompts, schema, wait=False)
 # ... check later with monitor_batch_job(job_name)
 ```
 
+**Direct API mode:** Same call site, immediate results at full cost (no batch discount)
+```python
+results = batch_process(prompts, schema, mode="direct")
+# Mode-irrelevant params (e.g. wait, poll_interval, rpm) log a WARNING and are
+# ignored, so you can flip the flag without rewriting the rest of the call.
+```
+
 **Media quality control:** Adjust token usage vs quality
 ```python
 results = batch_process(prompts, schema, media_resolution="MEDIA_RESOLUTION_HIGH")
@@ -81,6 +88,9 @@ results = batch_process(prompts, schema)
 from gemini_batch import batch_embed
 embeddings = batch_embed(["doc 1", "doc 2"])  # default: gemini-embedding-2
 # Returns: [[0.12, -0.45, ...], [0.78, ...]]  (3072-dim)
+
+# Same call site, direct API path:
+embeddings = batch_embed(["doc 1", "doc 2"], mode="direct")
 ```
 
 **Direct API embeddings:** Immediate results at full cost (when speed matters)
