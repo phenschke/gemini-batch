@@ -7,10 +7,12 @@ Also provides direct API embedding support for immediate results.
 
 import asyncio
 import json
+import random
 import time
 from typing import Union, Optional, List, Literal, Dict, Any, Tuple
 from pathlib import Path
 from google.genai import types
+from google.genai import errors as genai_errors
 from tqdm.asyncio import tqdm as async_tqdm
 
 from . import config as app_config
@@ -34,6 +36,33 @@ def _model_honors_task_type(model: str) -> bool:
     https://ai.google.dev/gemini-api/docs/embeddings#migration
     """
     return "embedding-001" in model
+
+
+# Retry policy for transient server errors in direct-mode embedding requests.
+# google-genai has its own short internal retry, but sustained 503 UNAVAILABLE
+# spells (endpoint overload) outlast it; this outer loop waits it out with
+# exponential backoff + jitter before giving up on the whole run.
+_DIRECT_RETRYABLE_CODES = {429, 500, 502, 503, 504}
+_DIRECT_MAX_RETRIES = 8
+_DIRECT_BACKOFF_BASE = 2.0   # seconds; doubles each attempt
+_DIRECT_BACKOFF_CAP = 120.0  # seconds
+
+
+async def _embed_with_retry(coro_factory, batch_index: int):
+    """Await coro_factory() with retries on transient APIError codes."""
+    for attempt in range(_DIRECT_MAX_RETRIES + 1):
+        try:
+            return await coro_factory()
+        except genai_errors.APIError as e:
+            if e.code not in _DIRECT_RETRYABLE_CODES or attempt == _DIRECT_MAX_RETRIES:
+                raise
+            delay = min(_DIRECT_BACKOFF_BASE * (2 ** attempt), _DIRECT_BACKOFF_CAP)
+            delay *= 0.5 + random.random()  # jitter: 0.5x-1.5x
+            logger.warning(
+                "Batch %d: transient %s error (attempt %d/%d), retrying in %.1fs",
+                batch_index, e.code, attempt + 1, _DIRECT_MAX_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
 
 
 def _warn_if_task_type_dropped(task_type: Optional[str], model: str) -> None:
@@ -521,7 +550,7 @@ async def async_embed(
         if wait_time > 0:
             await asyncio.sleep(wait_time)
 
-    async def process_batch(batch: List[str]) -> Tuple[List[List[float]], List[Dict]]:
+    async def process_batch(batch: List[str], batch_index: int) -> Tuple[List[List[float]], List[Dict]]:
         """Process a single batch of texts."""
         async with semaphore:
             await wait_for_rate_limit()
@@ -529,12 +558,15 @@ async def async_embed(
             # NOTE: gemini-embedding-2 aggregates a raw list of strings into a single
             # embedding. Wrap each text in its own Content so we get one embedding per
             # input. See https://ai.google.dev/gemini-api/docs/embeddings#migration
-            response = await client.client.aio.models.embed_content(
-                model=model,
-                contents=[
-                    types.Content(parts=[types.Part(text=t)]) for t in batch
-                ],
-                config=embed_config,
+            response = await _embed_with_retry(
+                lambda: client.client.aio.models.embed_content(
+                    model=model,
+                    contents=[
+                        types.Content(parts=[types.Part(text=t)]) for t in batch
+                    ],
+                    config=embed_config,
+                ),
+                batch_index,
             )
 
             # Extract embeddings and metadata
@@ -576,7 +608,7 @@ async def async_embed(
     # Process all batches concurrently with progress tracking
     if show_progress:
         # Create tasks wrapped with progress bar
-        tasks = [process_batch(batch) for batch in text_batches]
+        tasks = [process_batch(batch, i) for i, batch in enumerate(text_batches)]
         results = await async_tqdm.gather(
             *tasks,
             desc="Embedding batches",
@@ -584,7 +616,7 @@ async def async_embed(
             unit="batch"
         )
     else:
-        tasks = [process_batch(batch) for batch in text_batches]
+        tasks = [process_batch(batch, i) for i, batch in enumerate(text_batches)]
         results = await asyncio.gather(*tasks)
 
     # Flatten results
