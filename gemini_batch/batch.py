@@ -25,6 +25,65 @@ from .utils import (
 )
 
 
+def _part_text(part) -> str:
+    """Text of one response part, whether it is a dict or a genai object."""
+    if isinstance(part, dict):
+        return part.get('text') or ''
+    return getattr(part, 'text', None) or ''
+
+
+def extract_text(response) -> tuple:
+    """
+    Extract the answer text from a Gemini response, or say why there isn't one.
+
+    Returns ``(text, reason)`` — exactly one is ever set. ``reason`` is a short
+    lower-case string suitable for logging or for an error record.
+
+    This is the checked counterpart to :func:`_extract_text_from_parts`, which
+    picks a single part and cannot see a blocked or truncated response:
+
+    * All parts are concatenated. A thought part and an answer part are both
+      "text", and choosing between them by position silently ships the wrong
+      one when the model emits them in an unexpected order — or ships both
+      when it emits them concatenated inside a single part.
+    * A ``finishReason`` other than ``STOP`` means the model never reached the
+      end of the answer, so whatever came back is a fragment no matter how
+      long it is. ``RECITATION`` in particular returns a plausible-looking
+      empty string with a full output-token count.
+
+    Accepts either a genai response object or the dict form found in batch
+    results JSONL.
+    """
+    if response is None:
+        return None, 'no response'
+
+    if isinstance(response, dict):
+        candidates = response.get('candidates') or []
+    else:
+        candidates = getattr(response, 'candidates', None) or []
+    if not candidates:
+        return None, 'no candidates'
+
+    candidate = candidates[0]
+    if isinstance(candidate, dict):
+        finish = candidate.get('finishReason') or candidate.get('finish_reason')
+        content = candidate.get('content') or {}
+        parts = (content.get('parts') if isinstance(content, dict) else None) or []
+    else:
+        finish = getattr(candidate, 'finish_reason', None)
+        content = getattr(candidate, 'content', None)
+        parts = getattr(content, 'parts', None) or []
+
+    finish = getattr(finish, 'name', finish)  # genai enum -> str
+    if finish is not None and str(finish).upper() not in ('STOP', 'FINISH_REASON_STOP'):
+        return None, f'finish={finish}'
+
+    text = ''.join(_part_text(p) for p in parts)
+    if not text:
+        return None, 'no text in response'
+    return text, None
+
+
 def _extract_text_from_parts(parts: list) -> str:
     """
     Extract the actual content text from response parts.
@@ -764,7 +823,9 @@ def parse_batch_results(
             metadata = None  # Collect metadata locally, append with parsed_results
             if hasattr(response, 'candidates'):
                 # genai response object
-                llm_output = _extract_text_from_parts(response.candidates[0].content.parts)
+                llm_output, reason = extract_text(response)
+                if reason is not None:
+                    raise ValueError(reason)
                 # Extract metadata if requested
                 if return_metadata:
                     metadata = {}
@@ -780,7 +841,9 @@ def parse_batch_results(
                         metadata['modelVersion'] = response.model_version
             elif isinstance(response, dict):
                 # dict format
-                llm_output = _extract_text_from_parts(response['candidates'][0]['content']['parts'])
+                llm_output, reason = extract_text(response)
+                if reason is not None:
+                    raise ValueError(reason)
                 # Extract metadata if requested
                 if return_metadata:
                     metadata = {}
@@ -828,7 +891,7 @@ def parse_batch_results(
                     success_count += 1
                     logger.debug(f"Successfully parsed result for {identifier} (no validation)")
 
-        except (KeyError, IndexError, json.JSONDecodeError, AttributeError, ValidationError) as e:
+        except (KeyError, IndexError, ValueError, json.JSONDecodeError, AttributeError, ValidationError) as e:
             logger.error(f"Failed to parse result for {identifier}: {e}")
             parsed_results.append(None)
             if return_metadata:

@@ -27,7 +27,7 @@ from .utils import (
     logger,
     _compute_content_hash,
 )
-from .batch import _extract_text_from_parts
+from .batch import extract_text
 
 
 def _is_rate_limit_error(e: Exception) -> bool:
@@ -302,8 +302,10 @@ async def async_process(
                         config=gen_config,
                     )
 
-                # Extract text
-                text = _extract_text_from_parts(response.candidates[0].content.parts)
+                # Extract text (checked: concatenates parts, refuses non-STOP)
+                text, _reason = extract_text(response)
+                if _reason is not None:
+                    raise ValueError(_reason)
 
                 # Extract metadata
                 metadata = _extract_metadata(response)

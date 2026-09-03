@@ -28,6 +28,7 @@ from . import batch
 from . import utils
 from . import aggregation
 from .batch import (
+    extract_text,
     create_batch_job,
     monitor_batch_job,
     download_batch_results,
@@ -90,6 +91,7 @@ __all__ = [
     "download_batch_results",
     "get_inline_results",
     "parse_batch_results",
+    "extract_text",
     "get_batch_job_output_uri",
     "resume_batch_job",
     "aggregate_records",
