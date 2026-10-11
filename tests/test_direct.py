@@ -33,7 +33,8 @@ class ItemSchema(BaseModel):
 
 # --- Helper to build mock response ---
 
-def _make_response(text, prompt_tokens=10, candidates_tokens=5, model_version="gemini-test"):
+def _make_response(text, prompt_tokens=10, candidates_tokens=5, model_version="gemini-test",
+                   finish_reason="STOP"):
     """Build a mock generate_content response."""
     mock_part = MagicMock()
     mock_part.text = text
@@ -43,6 +44,7 @@ def _make_response(text, prompt_tokens=10, candidates_tokens=5, model_version="g
 
     mock_candidate = MagicMock()
     mock_candidate.content = mock_content
+    mock_candidate.finish_reason = finish_reason
 
     mock_usage = MagicMock()
     mock_usage.total_token_count = prompt_tokens + candidates_tokens
@@ -544,3 +546,53 @@ class TestRateLimitRetry:
 
         assert results[0] is None
         assert mock_models.generate_content.call_count == 2
+
+
+class TestFinishReasonRetry:
+    """A recitation block is billed once, not retried; a truncation is retried."""
+
+    async def _run(self, response, retry_count=2):
+        with patch("gemini_batch.direct.GeminiClient") as MockClient, \
+             patch("gemini_batch.direct.collect_and_upload_files", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = ({}, {})
+            mock_client_instance = MagicMock()
+            mock_models = MagicMock()
+            mock_models.generate_content = AsyncMock(return_value=response)
+            mock_client_instance.client.aio.models = mock_models
+            MockClient.return_value = mock_client_instance
+
+            results, metadata = await async_process(
+                prompts=[["Transcribe this."]],
+                show_progress=False,
+                return_metadata=True,
+                retry_count=retry_count,
+                retry_delay=0.01,
+            )
+        return results, metadata, mock_models.generate_content.await_count
+
+    @pytest.mark.asyncio
+    async def test_recitation_is_not_retried(self):
+        results, metadata, calls = await self._run(
+            _make_response("", finish_reason="RECITATION")
+        )
+        assert results == [None]
+        assert calls == 1
+        # the call was billed, so its usage still reaches the caller
+        assert metadata[0]["usageMetadata"]["candidatesTokenCount"] == 5
+
+    @pytest.mark.asyncio
+    async def test_truncation_is_retried(self):
+        results, _metadata, calls = await self._run(
+            _make_response("half a page", finish_reason="MAX_TOKENS"), retry_count=2,
+        )
+        assert results == [None]
+        assert calls == 3
+
+
+def test_terminal_finish_matches_enum_and_prefixed_forms():
+    from gemini_batch.direct import _is_terminal_finish
+
+    assert _is_terminal_finish("finish=RECITATION")
+    assert _is_terminal_finish("finish=FINISH_REASON_RECITATION")
+    assert not _is_terminal_finish("finish=MAX_TOKENS")
+    assert not _is_terminal_finish(None)

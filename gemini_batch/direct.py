@@ -30,6 +30,17 @@ from .utils import (
 from .batch import extract_text
 
 
+# Finish reasons a retry cannot fix. A recitation block reproduces on every
+# attempt, so retrying it only bills the same refusal again. A truncation or a
+# repetition loop can come out differently, so those keep the retry.
+_TERMINAL_FINISH = ("RECITATION",)
+
+
+def _is_terminal_finish(reason: Optional[str]) -> bool:
+    """True when *reason* is a finish no retry will change."""
+    return reason is not None and any(f in reason.upper() for f in _TERMINAL_FINISH)
+
+
 def _is_rate_limit_error(e: Exception) -> bool:
     """Check if an exception is a 429 rate limit error."""
     error_str = str(e)
@@ -304,6 +315,9 @@ async def async_process(
 
                 # Extract text (checked: concatenates parts, refuses non-STOP)
                 text, _reason = extract_text(response)
+                if _is_terminal_finish(_reason):
+                    logger.warning(f"Prompt {idx}: {_reason}, not retrying")
+                    return (idx, None, _extract_metadata(response))
                 if _reason is not None:
                     raise ValueError(_reason)
 

@@ -1082,6 +1082,7 @@ def test_parse_batch_results_with_genai_response_objects():
 
     mock_candidate = Mock()
     mock_candidate.content = mock_content
+    mock_candidate.finish_reason = "STOP"
 
     mock_response = Mock()
     mock_response.candidates = [mock_candidate]
