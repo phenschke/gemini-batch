@@ -330,6 +330,8 @@ pip install -e ".[dev]"                                        # Install
 
 **Failed requests**: Don't fail whole job; check `batch_stats.failed_request_count`
 
+**Thinking off**: gemini-3*/gemini-4* reject `thinking_budget`, so `build_generation_config` turns the default `thinking_budget=0` into the model's lowest `thinking_level` (`lowest_thinking_level()`). That is `MINIMAL` on most gemini-3 and `LOW` on gemini-3.7/3.8 and gemini-4, which 400 on `MINIMAL`. `LOW` is not zero — nudge in the prompt and check `thoughtsTokenCount`.
+
 **Rate limiting**: `GeminiClient.generate_content()` has 15 calls/60s limit (not used by batch API)
 
 **File cleanup**: `.gemini_batch/batch_{timestamp}_requests.jsonl` and `_results.jsonl` (gitignored, not auto-cleaned for debugging)

@@ -28,6 +28,26 @@ from .types import TokenStatistics
 # unless thinking_level is supplied.
 _UNSET = object()
 
+# Models that take thinking_level instead of thinking_budget, and the lowest
+# level each accepts. 3.7/3.8 Flash and gemini-4 reject MINIMAL with a 400.
+# First matching prefix wins.
+_LOWEST_THINKING_LEVEL = (
+    ("gemini-3.7", "LOW"),
+    ("gemini-3.8", "LOW"),
+    ("gemini-3", "MINIMAL"),
+    ("gemini-4", "LOW"),
+)
+
+
+def lowest_thinking_level(model: Optional[str]) -> Optional[str]:
+    """Lowest thinking_level *model* accepts, or None if it takes thinking_budget."""
+    if not model:
+        return None
+    for prefix, level in _LOWEST_THINKING_LEVEL:
+        if model.startswith(prefix):
+            return level
+    return None
+
 # Optional GCS import for Vertex AI support
 try:
     from google.cloud import storage as gcs_storage
@@ -1303,9 +1323,12 @@ def build_generation_config(
         response_schema: The schema for the response (either types.Schema or Pydantic BaseModel class).
         thinking_budget: The thinking budget (int, for Flash models). Defaults to 0 (disabled).
             Set to a positive int to enable thinking. Cannot be used with thinking_level.
-            Note: For gemini-3* models, thinking_budget=0 is automatically converted to
-            thinking_level="MINIMAL" as these models don't support thinking_budget.
-        thinking_level: The thinking level (str: "low" or "high", for Gemini 3.0 Pro). Cannot be used with thinking_budget.
+            Note: gemini-3* and gemini-4* models don't support thinking_budget, so
+            thinking_budget=0 becomes their lowest thinking_level: "MINIMAL" on most
+            gemini-3 models, "LOW" on gemini-3.7/3.8 and gemini-4 (which reject MINIMAL).
+            Thinking cannot be fully disabled on the "LOW" models.
+        thinking_level: The thinking level ("MINIMAL", "LOW", "MEDIUM", "HIGH"; which
+            ones a model accepts varies). Cannot be used with thinking_budget.
         temperature: The temperature.
         top_p: The top-p value.
         top_k: The top-k value.
@@ -1315,7 +1338,7 @@ def build_generation_config(
             - "MEDIA_RESOLUTION_MEDIUM": Balanced detail, cost, and speed (560 tokens for images)
             - "MEDIA_RESOLUTION_HIGH": Higher token usage, more detail, increased latency/cost (1120 tokens for images)
             Controls the maximum number of tokens allocated for media inputs.
-        model: The model name (used for automatic thinking config conversion for gemini-3* models).
+        model: The model name (used to convert thinking_budget=0 for gemini-3*/gemini-4* models).
 
     Returns:
         A types.GenerateContentConfig object representing the generation configuration.
@@ -1338,11 +1361,11 @@ def build_generation_config(
     if thinking_budget is _UNSET:
         thinking_budget = None if thinking_level is not None else 0
 
-    # Auto-convert thinking_budget=0 to thinking_level="MINIMAL" for gemini-3* models
-    is_gemini_3_model = model is not None and model.startswith("gemini-3")
-    if is_gemini_3_model and thinking_budget == 0 and thinking_level is None:
-        logger.info(f"thinking_budget=0 auto-converted to thinking_level='MINIMAL' for {model}")
-        thinking_level = "MINIMAL"
+    # Level-only models reject thinking_budget, so 0 becomes their lowest level
+    lowest = lowest_thinking_level(model)
+    if lowest and thinking_budget == 0 and thinking_level is None:
+        logger.info(f"thinking_budget=0 auto-converted to thinking_level='{lowest}' for {model}")
+        thinking_level = lowest
         thinking_budget = None
 
     # Validate that only one thinking parameter is provided
@@ -1360,6 +1383,8 @@ def build_generation_config(
         gen_config_dict["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
         if thinking_level == "MINIMAL":
             logger.info("Thinking disabled (level=MINIMAL)")
+        elif thinking_level == lowest:
+            logger.info(f"Thinking at the lowest level {model} accepts (level={thinking_level})")
         else:
             logger.info(f"Thinking enabled with level={thinking_level}")
 

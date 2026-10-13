@@ -164,6 +164,36 @@ def test_build_generation_config_thinking_level_only():
     assert config.thinking_config.thinking_budget is None
 
 
+@pytest.mark.parametrize("model, level", [
+    ("gemini-3-flash-preview", "MINIMAL"),
+    ("gemini-3.5-flash", "MINIMAL"),
+    ("gemini-3.7-flash", "LOW"),
+    ("gemini-3.8-flash", "LOW"),
+    ("gemini-4-argon", "LOW"),
+])
+def test_build_generation_config_zero_budget_becomes_lowest_level(model, level):
+    """thinking_budget=0 maps to the lowest level each level-only model accepts."""
+    config = build_generation_config(model=model)
+
+    assert str(config.thinking_config.thinking_level).upper().endswith(level)
+    assert config.thinking_config.thinking_budget is None
+
+
+def test_build_generation_config_budget_model_keeps_budget():
+    """Models that take thinking_budget keep budget=0."""
+    config = build_generation_config(model="gemini-2.5-flash")
+
+    assert config.thinking_config.thinking_budget == 0
+    assert config.thinking_config.thinking_level is None
+
+
+def test_build_generation_config_explicit_level_wins_on_level_model():
+    """An explicit thinking_level is not overridden by the lowest-level default."""
+    config = build_generation_config(model="gemini-4-argon", thinking_level="medium")
+
+    assert str(config.thinking_config.thinking_level).upper().endswith("MEDIUM")
+
+
 def test_build_generation_config_both_thinking_params_raises():
     """Explicitly passing both thinking_budget and thinking_level still errors."""
     import pytest

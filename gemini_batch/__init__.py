@@ -70,7 +70,7 @@ from .direct import async_process, process
 if not logging.root.handlers:
     utils.setup_logging()
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 __all__ = [
     "batch_process",
     # Batch embeddings
